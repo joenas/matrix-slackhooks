@@ -1,0 +1,40 @@
+# Example config for matrix-slackhooks.
+# Copy to config.yaml and edit. Every value can also be set via an
+# SLACKHOOKS_* environment variable (see README).
+
+# The Matrix homeserver.
+homeserver_url: http://localhost:8008
+server_name: localhost
+
+# Appservice tokens. They must match the registration file given to the
+# homeserver. Run `slackhooks generate-registration` to create both.
+as_token: ""
+hs_token: ""
+
+# Address the appservice listens on (Matrix transaction calls from the
+# homeserver). A unix socket path is also accepted.
+as_address: "0.0.0.0:29329"
+
+# URL the homeserver uses to reach the appservice (written into the
+# generated registration file). Defaults to the listen address on localhost.
+appservice_url: "http://localhost:29329"
+
+# Optional separate address to serve the public webhook endpoints on. If
+# empty, webhooks are served on the appservice address above.
+webhook_address: ""
+
+# Public base URL used when printing webhook URLs (add-hook output).
+public_base_url: "https://hooks.example.com"
+
+# SQLite database path.
+db: slackhooks.db
+
+# The appservice bot user.
+bot_localpart: slackhooks
+bot_displayname: Slack Hook
+
+# Prefix for the puppet users created per webhook source.
+user_prefix: _slackhook_
+
+# Event type used for messages: m.text or m.notice.
+default_msgtype: m.text
