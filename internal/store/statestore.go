@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"strings"
 
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix"
@@ -26,13 +25,11 @@ func NewStateStore(db *DB) *StateStore {
 	}
 }
 
-func userLocalpart(userID id.UserID) string {
-	localpart, _, _ := strings.Cut(userID.String(), ":")
-	return localpart
-}
+// The membership cache is keyed by full user ID (@localpart:server), so
+// users with the same localpart on different servers never collide.
 
 func (s *StateStore) IsMembership(ctx context.Context, roomID id.RoomID, userID id.UserID, allowed ...event.Membership) bool {
-	membership, err := s.db.GetMembership(userLocalpart(userID), roomID)
+	membership, err := s.db.GetMembership(userID, roomID)
 	if err != nil {
 		zerolog.Ctx(ctx).Warn().Err(err).
 			Str("room_id", roomID.String()).
@@ -57,12 +54,12 @@ func (s *StateStore) IsInvited(ctx context.Context, roomID id.RoomID, userID id.
 }
 
 func (s *StateStore) SetMembership(ctx context.Context, roomID id.RoomID, userID id.UserID, membership event.Membership) error {
-	return s.db.SetMembership(userLocalpart(userID), roomID, string(membership))
+	return s.db.SetMembership(userID, roomID, string(membership))
 }
 
 func (s *StateStore) SetMember(ctx context.Context, roomID id.RoomID, userID id.UserID, member *event.MemberEventContent) error {
 	if member != nil {
-		if err := s.db.SetMembership(userLocalpart(userID), roomID, string(member.Membership)); err != nil {
+		if err := s.db.SetMembership(userID, roomID, string(member.Membership)); err != nil {
 			return err
 		}
 	}
@@ -70,5 +67,5 @@ func (s *StateStore) SetMember(ctx context.Context, roomID id.RoomID, userID id.
 }
 
 func (s *StateStore) ForgetMembership(ctx context.Context, roomID id.RoomID, userID id.UserID) error {
-	return s.db.DeleteMembership(userLocalpart(userID), roomID)
+	return s.db.DeleteMembership(userID, roomID)
 }

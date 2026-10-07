@@ -42,16 +42,22 @@ func TestSlackToHTML(t *testing.T) {
 			wantHTML:  "run <code>make test</code> now",
 		},
 		{
-			name:      "code block with language",
+			name:      "code block keeps its first line",
 			input:     "before\n```go\nfmt.Println(\"hi\")\n```\nafter",
-			wantPlain: "before\nfmt.Println(\"hi\")\nafter",
-			wantHTML:  "before<br>\n<pre><code>fmt.Println(&#34;hi&#34;)</code></pre><br>\nafter",
+			wantPlain: "before\ngo\nfmt.Println(\"hi\")\nafter",
+			wantHTML:  "before<br>\n<pre><code>go\nfmt.Println(&#34;hi&#34;)</code></pre><br>\nafter",
 		},
 		{
 			name:      "code block without language",
 			input:     "```\nplain code\n```",
 			wantPlain: "plain code",
 			wantHTML:  "<pre><code>plain code</code></pre>",
+		},
+		{
+			name:      "code block without leading newline",
+			input:     "```line1\nline2```",
+			wantPlain: "line1\nline2",
+			wantHTML:  "<pre><code>line1\nline2</code></pre>",
 		},
 		{
 			name:      "link with label",

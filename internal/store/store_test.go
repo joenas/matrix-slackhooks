@@ -114,3 +114,41 @@ func TestStateStoreMemberships(t *testing.T) {
 		t.Error("membership should be forgotten")
 	}
 }
+
+func TestMembershipKeyedByFullUserID(t *testing.T) {
+	db := openTestDB(t)
+	ss := NewStateStore(db)
+	room := id.RoomID("!room:example.com")
+	onion := id.UserID("_slackhook_bot:example.com")
+	elsewhere := id.UserID("_slackhook_bot:other.example")
+	ctx := t.Context()
+
+	if err := ss.SetMembership(ctx, room, onion, event.MembershipJoin); err != nil {
+		t.Fatalf("set membership: %v", err)
+	}
+	if !ss.IsInRoom(ctx, room, onion) {
+		t.Error("user should be in room")
+	}
+	if ss.IsInRoom(ctx, room, elsewhere) {
+		t.Error("same localpart on another server must have its own membership entry")
+	}
+	if err := ss.SetMembership(ctx, room, elsewhere, event.MembershipInvite); err != nil {
+		t.Fatalf("set membership for other server: %v", err)
+	}
+	if !ss.IsInvited(ctx, room, elsewhere) || ss.IsInRoom(ctx, room, elsewhere) {
+		t.Error("other-server membership should be independent")
+	}
+	if !ss.IsInRoom(ctx, room, onion) {
+		t.Error("first user membership should be unaffected")
+	}
+
+	if err := ss.ForgetMembership(ctx, room, elsewhere); err != nil {
+		t.Fatalf("forget other server: %v", err)
+	}
+	if !ss.IsInRoom(ctx, room, onion) {
+		t.Error("forgetting the other server's membership must not affect this one")
+	}
+	if ss.IsMembership(ctx, room, elsewhere, event.MembershipJoin, event.MembershipInvite) {
+		t.Error("other-server membership should be forgotten")
+	}
+}

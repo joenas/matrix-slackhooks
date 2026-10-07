@@ -5,7 +5,13 @@ services:
     environment:
       SYNAPSE_SERVER_NAME: localhost
       SYNAPSE_REPORT_STATS: "no"
+      # Dev-only shared secret so `register_new_matrix_user -c /data/homeserver.yaml` works.
+      SYNAPSE_REGISTRATION_SHARED_SECRET: slackhooks-dev-secret
     ports:
       - "8008:8008"
     volumes:
       - ./synapse:/data
+    extra_hosts:
+      # Lets Synapse reach the appservice running on the host as
+      # http://host.docker.internal:29329 (also works on Linux).
+      - "host.docker.internal:host-gateway"

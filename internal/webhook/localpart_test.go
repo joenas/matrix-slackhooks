@@ -11,13 +11,17 @@ func TestLocalpart(t *testing.T) {
 		name string
 		want string
 	}{
-		{"My Bot", "_slackhook_my-bot"},
-		{"J.R. Dobell=Quux_x-2", "_slackhook_j.r.-dobell=quux_x-2"},
-		{"  spaces  everywhere  ", "_slackhook_spaces-everywhere"},
+		{"build-bot", "_slackhook_build-bot"},
+		{"a.b-c=d_1x", "_slackhook_a.b-c=d_1x"},
+		// Anything that is not already a valid lowercase localpart gets a
+		// hash, so names differing only in case/separators never collide.
+		{"My Bot", ""},
+		{"J.R. Dobell=Quux_x-2", ""},
+		{"  spaces  everywhere  ", ""},
 		{"Ünïcödé Bot", ""}, // checked with a prefix match below
 		{"日本語", ""},
 		{"", "_slackhook_webhook"},
-		{"!!!", "_slackhook_webhook"},
+		{"!!!", ""},
 		{strings.Repeat("a", 100), ""},
 	}
 	for _, test := range tests {
@@ -62,6 +66,22 @@ func TestLocalpartDifferentNamesDontCollide(t *testing.T) {
 	b := Localpart("_slackhook_", "另一个机器人")
 	if a == b {
 		t.Errorf("non-ASCII names collided: %q", a)
+	}
+}
+
+func TestLocalpartLossyASCIINameCollisions(t *testing.T) {
+	names := []string{"Build Bot", "build bot", "Build-Bot", "Build  Bot", "build.bot"}
+	seen := map[string]string{}
+	for _, name := range names {
+		got := Localpart("_slackhook_", name)
+		if prev, ok := seen[got]; ok {
+			t.Errorf("names %q and %q collided on %q", prev, name, got)
+		}
+		seen[got] = name
+	}
+	// A name that already is a valid lowercase localpart stays hash-free.
+	if got := Localpart("_slackhook_", "build-bot"); got != "_slackhook_build-bot" {
+		t.Errorf("already-valid name changed: %q", got)
 	}
 }
 

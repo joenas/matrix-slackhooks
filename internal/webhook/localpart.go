@@ -15,28 +15,15 @@ func isAllowedRune(r rune) bool {
 
 // Localpart generates the Matrix user localpart for a webhook source name.
 // The name is lowercased and stripped to the character set Matrix allows in
-// remote bridged user IDs ([a-z0-9._=-]). A short hash of the original name
-// is appended when the slug was lossy (non-ASCII characters dropped or the
-// slug truncated), so different names never collide.
+// bridged user IDs ([a-z0-9._=-]). A short hash of the original name is
+// appended whenever the slug is not exactly the trimmed original name (any
+// case change, separator substitution, dropped character or truncation), so
+// names that would otherwise slug to the same localpart never collide. Only
+// names that already are valid lowercase localparts stay hash-free.
 func Localpart(prefix, name string) string {
-	var slug strings.Builder
-	lossy := false
-	prevSeparator := true
-	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
-		if isAllowedRune(r) {
-			slug.WriteRune(r)
-			prevSeparator = false
-			continue
-		}
-		if r > 127 {
-			lossy = true
-		}
-		if !prevSeparator {
-			slug.WriteByte('-')
-			prevSeparator = true
-		}
-	}
-	s := strings.Trim(slug.String(), "-.")
+	trimmed := strings.TrimSpace(name)
+	s := slugify(trimmed)
+	lossy := s != trimmed
 	if len(s) > maxSlugLength {
 		s = strings.Trim(s[:maxSlugLength], "-.")
 		lossy = true
@@ -51,6 +38,23 @@ func Localpart(prefix, name string) string {
 		s = "webhook"
 	}
 	return prefix + s
+}
+
+// slugify lowercases the name and maps every character outside the allowed
+// set to a single "-" separator, trimming leading/trailing separators.
+func slugify(name string) string {
+	var slug strings.Builder
+	prevSeparator := true
+	for _, r := range strings.ToLower(name) {
+		if isAllowedRune(r) {
+			slug.WriteRune(r)
+			prevSeparator = false
+		} else if !prevSeparator {
+			slug.WriteByte('-')
+			prevSeparator = true
+		}
+	}
+	return strings.Trim(slug.String(), "-.")
 }
 
 func shortHash(name string) string {

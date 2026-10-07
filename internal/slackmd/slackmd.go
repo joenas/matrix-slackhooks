@@ -52,11 +52,11 @@ func unescapeEntities(text string) string {
 	return replacer.Replace(text)
 }
 
+// stripFenceLang trims bordering newlines off a code fence body. Slack has
+// no language hints, so fence content is never dropped; only the newlines
+// directly after the opening / before the closing ``` are removed.
 func stripFenceLang(fence string) string {
-	if idx := strings.Index(fence, "\n"); idx >= 0 {
-		fence = fence[idx+1:]
-	}
-	return strings.TrimSuffix(fence, "\n")
+	return strings.Trim(fence, "\n")
 }
 
 var emphasisTags = map[rune][2]string{

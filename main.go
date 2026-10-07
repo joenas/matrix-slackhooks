@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -103,9 +104,10 @@ func cmdGenerateRegistration(configPath string, args []string) {
 		SenderLocalpart: cfg.BotLocalpart,
 		RateLimited:     &f,
 	}
+	userRegex, botRegex := userNamespaceRegexes(cfg.UserPrefix, cfg.BotLocalpart, cfg.ServerName)
 	reg.Namespaces.UserIDs = appservice.NamespaceList{
-		{Regex: "^" + cfg.UserPrefix + `.*$`, Exclusive: true},
-		{Regex: "^" + cfg.BotLocalpart + "$", Exclusive: true},
+		{Regex: userRegex, Exclusive: true},
+		{Regex: botRegex, Exclusive: true},
 	}
 	data, err := reg.YAML()
 	if err != nil {
@@ -125,6 +127,15 @@ func cmdGenerateRegistration(configPath string, args []string) {
 		fmt.Fprintf(os.Stderr, "# as_token: %s\n", cfg.ASToken)
 		fmt.Fprintf(os.Stderr, "# hs_token: %s\n", cfg.HSToken)
 	}
+}
+
+// userNamespaceRegexes builds the user namespace regexes for the appservice
+// registration. Synapse matches these against full user IDs (@localpart:
+// servername), so the patterns must include the sigil and the server name.
+func userNamespaceRegexes(userPrefix, botLocalpart, serverName string) (userRegex, botRegex string) {
+	userRegex = "^@" + regexp.QuoteMeta(userPrefix) + ".*:" + regexp.QuoteMeta(serverName) + "$"
+	botRegex = "^@" + regexp.QuoteMeta(botLocalpart) + ":" + regexp.QuoteMeta(serverName) + "$"
+	return
 }
 
 func cmdAddHook(configPath string, args []string) {

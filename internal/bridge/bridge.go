@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"path"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -39,8 +42,57 @@ func New(cfg *config.Config, db *store.DB, as *appservice.AppService, log zerolo
 		DB:          db,
 		AS:          as,
 		Log:         log,
-		MediaClient: &http.Client{Timeout: 30 * time.Second},
+		MediaClient: newAvatarClient(),
 	}
+}
+
+// newAvatarClient builds the HTTP client used for avatar downloads. It
+// refuses to connect to loopback, private, link-local, unspecified or
+// multicast addresses (checked per dial, so redirects and DNS rebinding are
+// covered too) and follows at most 3 redirects.
+func newAvatarClient() *http.Client {
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control: func(_, address string, _ syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return fmt.Errorf("unexpected dial address %q: %w", address, err)
+			}
+			ip, err := netip.ParseAddr(host)
+			if err != nil {
+				return fmt.Errorf("unexpected dial address %q: %w", address, err)
+			}
+			if isLocalIP(ip) {
+				return fmt.Errorf("refusing avatar download connection to %s", ip)
+			}
+			return nil
+		},
+	}
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			DialContext:         dialer.DialContext,
+			TLSHandshakeTimeout: 10 * time.Second,
+		},
+		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+			if len(via) >= 3 {
+				return errors.New("avatar download: too many redirects")
+			}
+			return nil
+		},
+	}
+}
+
+// isLocalIP reports whether an IP address is one that avatar downloads must
+// never reach: loopback, unspecified, private, link-local or multicast
+// (including the IPv4-in-IPv6 forms).
+func isLocalIP(ip netip.Addr) bool {
+	if ip.Is4In6() {
+		ip = ip.Unmap()
+	}
+	return ip.IsLoopback() || ip.IsUnspecified() || ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast()
 }
 
 func (b *Bridge) QueryAlias(alias id.RoomAlias) bool {
@@ -48,10 +100,17 @@ func (b *Bridge) QueryAlias(alias id.RoomAlias) bool {
 }
 
 func (b *Bridge) QueryUser(userID id.UserID) bool {
-	if userID == b.AS.BotMXID() {
-		return true
+	return userID == b.AS.BotMXID() || b.isPuppet(userID)
+}
+
+// isPuppet reports whether the user ID belongs to one of this appservice's
+// puppet users: a user on our own server whose localpart starts with the
+// configured namespace prefix.
+func (b *Bridge) isPuppet(userID id.UserID) bool {
+	localpart, serverName, err := userID.Parse()
+	if err != nil || serverName != b.Cfg.ServerName {
+		return false
 	}
-	localpart, _, _ := strings.Cut(userID.String(), ":")
 	return strings.HasPrefix(localpart, b.Cfg.UserPrefix)
 }
 
@@ -162,7 +221,7 @@ func (b *Bridge) sendMessage(ctx context.Context, log zerolog.Logger, intent *ap
 	// The membership cache said we were in the room, but the homeserver
 	// disagrees (e.g. the puppet got kicked while we weren't looking).
 	log.Warn().Err(err).Msg("Sending forbidden, dropping membership cache and retrying join")
-	_ = b.DB.DeleteMembership(intent.Localpart, roomID)
+	_ = b.DB.DeleteMembership(intent.UserID, roomID)
 	if joinErr := intent.EnsureJoined(ctx, roomID, appservice.EnsureJoinedParams{IgnoreCache: true}); joinErr != nil {
 		return joinErr
 	}
@@ -262,8 +321,7 @@ func (b *Bridge) HandleRoomMember(ctx context.Context, evt *event.Event) {
 		}
 		return
 	}
-	localpart, _, _ := strings.Cut(target.String(), ":")
-	if !strings.HasPrefix(localpart, b.Cfg.UserPrefix) {
+	if !b.isPuppet(target) {
 		return
 	}
 	hasHooks, err := b.DB.HasHooksForRoom(evt.RoomID)

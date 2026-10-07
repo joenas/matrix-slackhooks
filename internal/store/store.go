@@ -35,10 +35,10 @@ CREATE TABLE IF NOT EXISTS puppets (
 	updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS memberships (
-	localpart TEXT NOT NULL,
+	user_id TEXT NOT NULL,
 	room_id TEXT NOT NULL,
 	membership TEXT NOT NULL,
-	PRIMARY KEY (localpart, room_id)
+	PRIMARY KEY (user_id, room_id)
 );
 CREATE TABLE IF NOT EXISTS avatars (
 	source_url TEXT PRIMARY KEY,
@@ -171,24 +171,26 @@ func (d *DB) PutAvatar(sourceURL, mxc string) error {
 	return err
 }
 
-func (d *DB) GetMembership(localpart string, roomID id.RoomID) (string, error) {
+// GetMembership returns the cached membership of a full user ID in a room,
+// or "" when there is no cache entry.
+func (d *DB) GetMembership(userID id.UserID, roomID id.RoomID) (string, error) {
 	var membership string
-	err := d.db.QueryRow(`SELECT membership FROM memberships WHERE localpart = ? AND room_id = ?`, localpart, roomID.String()).Scan(&membership)
+	err := d.db.QueryRow(`SELECT membership FROM memberships WHERE user_id = ? AND room_id = ?`, userID.String(), roomID.String()).Scan(&membership)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	return membership, err
 }
 
-func (d *DB) SetMembership(localpart string, roomID id.RoomID, membership string) error {
+func (d *DB) SetMembership(userID id.UserID, roomID id.RoomID, membership string) error {
 	_, err := d.db.Exec(`
-		INSERT INTO memberships (localpart, room_id, membership) VALUES (?, ?, ?)
-		ON CONFLICT (localpart, room_id) DO UPDATE SET membership = excluded.membership`,
-		localpart, roomID.String(), membership)
+		INSERT INTO memberships (user_id, room_id, membership) VALUES (?, ?, ?)
+		ON CONFLICT (user_id, room_id) DO UPDATE SET membership = excluded.membership`,
+		userID.String(), roomID.String(), membership)
 	return err
 }
 
-func (d *DB) DeleteMembership(localpart string, roomID id.RoomID) error {
-	_, err := d.db.Exec(`DELETE FROM memberships WHERE localpart = ? AND room_id = ?`, localpart, roomID.String())
+func (d *DB) DeleteMembership(userID id.UserID, roomID id.RoomID) error {
+	_, err := d.db.Exec(`DELETE FROM memberships WHERE user_id = ? AND room_id = ?`, userID.String(), roomID.String())
 	return err
 }

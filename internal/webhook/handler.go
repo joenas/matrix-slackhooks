@@ -26,7 +26,7 @@ type Handler struct {
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Found", http.StatusMethodNotAllowed)
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	token := r.PathValue("token")
@@ -35,7 +35,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		segments := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		token = segments[len(segments)-1]
 	}
-	log := h.Log.With().Str("token", token).Logger()
+	log := h.Log.With().Str("token", tokenLogPrefix(token)).Logger()
 	hook, err := h.Store.GetHook(token)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to look up webhook")
@@ -45,6 +45,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Webhook not found", http.StatusNotFound)
 		return
 	}
+	log = log.With().Str("room_id", hook.RoomID.String()).Logger()
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodySize+1))
 	if err != nil {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
@@ -69,6 +70,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+// tokenLogPrefix returns a short non-secret prefix of a webhook token for
+// log context, so full tokens never end up in the logs.
+func tokenLogPrefix(token string) string {
+	if len(token) > 6 {
+		return token[:6]
+	}
+	return token
 }
 
 // Mount registers the webhook routes on the given mux.
