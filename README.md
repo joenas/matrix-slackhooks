@@ -190,12 +190,45 @@ docker run --rm \
 ```
 
 Hand the printed registration to Synapse, store the two tokens as external
-secrets, then `docker stack deploy -c deploy/stack.yml slackhooks`. Two
+secrets, then `docker stack deploy -c deploy/stack.yml slackhooks`. Three
 details matter: replicas are pinned to 1 with `order: stop-first` (SQLite
-plus one registration must never have two processes on it), and the `/data`
-volume must be local (WAL on NFS breaks). Only the webhook port is published
-for the reverse proxy; the appservice port stays on the internal overlay
-network shared with Synapse.
+plus one registration must never have two processes on it), the `/data`
+volume must be local (WAL on NFS breaks) and the service is therefore pinned
+to one node with a placement constraint — label that node once before
+deploying:
+
+```
+docker node update --label-add slackhooks.data=true <node>
+```
+
+(Without the pin, Swarm rescheduling the task to another node would start it
+on a fresh empty local volume and every hook would be silently lost.) Only
+the webhook port is published for the reverse proxy; the appservice port
+stays on the internal overlay network shared with Synapse.
+
+### Moving an existing install into Swarm
+
+If you already run slackhooks outside Docker:
+
+- Reuse the existing `as_token`/`hs_token` from your current config as the
+  contents of the two Swarm secrets. Generating new tokens instead also
+  means replacing the registration file on Synapse.
+- Update the `url` in Synapse's existing registration file to the in-Swarm
+  appservice address (`http://slackhooks_slackhooks:29329`), make sure
+  Synapse is attached to the `matrix` overlay network, and restart Synapse.
+- Copy the existing `slackhooks.db` into the `slackhooks_data` volume before
+  the first start, owned by `10001:10001`. Stop the old process first, and
+  copy any `-wal`/`-shm` files along with it — or better, take a consistent
+  snapshot from the old install with `slackhooks backup` and copy that in as
+  `slackhooks.db`. Using a throwaway container on the labelled node:
+
+  ```
+  docker run --rm -v slackhooks_data:/data -v $PWD:/src alpine \
+      sh -c 'cp /src/slackhooks.db /data/ && chown 10001:10001 /data/slackhooks.db'
+  ```
+
+On first start the container migrates the database and writes a
+`.bak-v0-…` safety copy next to it.
 
 ### Managing hooks on the running service
 

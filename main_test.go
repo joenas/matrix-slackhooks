@@ -51,6 +51,17 @@ func TestOpenConfigMissingDefaultFallsBackToEnv(t *testing.T) {
 	}
 }
 
+func TestDefaultCreatedBy(t *testing.T) {
+	t.Setenv("USER", "alice")
+	if got := defaultCreatedBy(); got != "alice" {
+		t.Errorf("defaultCreatedBy with $USER=alice = %q; want alice", got)
+	}
+	t.Setenv("USER", "")
+	if got := defaultCreatedBy(); got != "cli" {
+		t.Errorf("defaultCreatedBy with empty $USER = %q; want cli", got)
+	}
+}
+
 func TestResolveRoom(t *testing.T) {
 	ctx := context.Background()
 	cfg := &config.Config{ServerName: "example.com", BotLocalpart: "slackhooks", HomeserverURL: "http://localhost:8008"}

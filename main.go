@@ -199,10 +199,20 @@ func resolveRoom(ctx context.Context, cfg *config.Config, arg string) (id.RoomID
 	}
 }
 
+// defaultCreatedBy is the default for add-hook's -by flag: $USER, falling
+// back to "cli" when it is unset (e.g. inside the Docker image, where there
+// is no $USER), so hooks never get an empty "created by".
+func defaultCreatedBy() string {
+	if user := os.Getenv("USER"); user != "" {
+		return user
+	}
+	return "cli"
+}
+
 func cmdAddHook(configPath string, args []string) {
 	fs := flag.NewFlagSet("add-hook", flag.ExitOnError)
 	label := fs.String("label", "", "optional label for the webhook (used as display name fallback)")
-	createdBy := fs.String("by", os.Getenv("USER"), "who is creating this webhook")
+	createdBy := fs.String("by", defaultCreatedBy(), `who is creating this webhook (default: $USER, or "cli" when unset)`)
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		log.Fatal().Msg("usage: slackhooks add-hook [-label label] [-by user] <room>")

@@ -21,6 +21,11 @@
 #   printf '%s' '<as_token>' | docker secret create slackhooks_as_token -
 #   printf '%s' '<hs_token>' | docker secret create slackhooks_hs_token -
 #
+# Pin the service to one node (the stack places a placement constraint on this
+# node label, see below). Do this once before deploying:
+#
+#   docker node update --label-add slackhooks.data=true <node>
+#
 # Deploy (the external "matrix" overlay network must also be attached to
 # Synapse so it can reach the appservice port):
 #
@@ -30,7 +35,7 @@
 services:
   slackhooks:
     image: ${SLACKHOOKS_IMAGE:?set SLACKHOOKS_IMAGE to <registry>/slackhooks:<tag>}
-    env:
+    environment:
       SLACKHOOKS_HOMESERVER_URL: "https://matrix.example.com"
       SLACKHOOKS_SERVER_NAME: "example.com"
       # How Synapse reaches this service on the shared overlay network.
@@ -57,7 +62,7 @@ services:
     ports:
       # Only the webhook port is published; the reverse proxy talks to this.
       - target: 29330
-        published: "29330"
+        published: 29330
         protocol: tcp
         mode: ingress
     networks:
@@ -65,6 +70,14 @@ services:
     deploy:
       mode: replicated
       replicas: 1
+      placement:
+        constraints:
+          # slackhooks_data is a LOCAL volume: if Swarm rescheduled the task
+          # to another node it would get a fresh empty volume there and every
+          # hook would be silently lost. Pin the service to the node labelled
+          # once with:
+          #   docker node update --label-add slackhooks.data=true <node>
+          - node.labels.slackhooks.data == true
       update_config:
         # One SQLite file and one appservice registration: two instances
         # must never run at once, not even briefly during an update.
