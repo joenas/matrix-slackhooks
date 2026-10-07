@@ -316,9 +316,7 @@ func (b *Bridge) HandleRoomMember(ctx context.Context, evt *event.Event) {
 	}
 	target := id.UserID(*evt.StateKey)
 	if target == b.AS.BotMXID() {
-		if _, err := b.AS.BotIntent().JoinRoomByID(ctx, evt.RoomID); err != nil {
-			b.Log.Warn().Err(err).Str("room_id", evt.RoomID.String()).Msg("Failed to join invite as bot")
-		}
+		b.handleBotInvite(ctx, evt)
 		return
 	}
 	if !b.isPuppet(target) {
@@ -341,12 +339,105 @@ func (b *Bridge) HandleRoomMember(ctx context.Context, evt *event.Event) {
 	}
 }
 
-// HandleBotMessage handles messages that may be bot commands. The command
-// handler is planned separately, so this is a no-op for now.
+// handleBotInvite joins the bot to allowed rooms and rejects invites to
+// everything else, so the bot can only end up in rooms it is meant to serve.
+func (b *Bridge) handleBotInvite(ctx context.Context, evt *event.Event) {
+	allowed, err := b.roomAllowedFor(ctx, evt.RoomID)
+	if err != nil {
+		b.Log.Warn().Err(err).Str("room_id", evt.RoomID.String()).
+			Msg("Failed to evaluate room allowlist; not joining")
+		return
+	}
+	if allowed {
+		if _, err = b.AS.BotIntent().JoinRoomByID(ctx, evt.RoomID); err != nil {
+			b.Log.Warn().Err(err).Str("room_id", evt.RoomID.String()).Msg("Failed to join invite as bot")
+		}
+		return
+	}
+	b.Log.Info().Str("room_id", evt.RoomID.String()).Str("inviter", evt.Sender.String()).
+		Msg("Rejecting bot invite to a room that is not allowed")
+	if _, err = b.AS.BotIntent().LeaveRoom(ctx, evt.RoomID,
+		&mautrix.ReqLeave{Reason: "This room is not allowed for slackhooks"}); err != nil {
+		b.Log.Warn().Err(err).Str("room_id", evt.RoomID.String()).Msg("Failed to reject invite as bot")
+	}
+}
+
+// roomAllowedFor reports whether the bot may join roomID: it has a webhook, or
+// it is in the configured allowlist (aliases resolved against the homeserver).
+func (b *Bridge) roomAllowedFor(ctx context.Context, roomID id.RoomID) (bool, error) {
+	hasHooks, err := b.DB.HasHooksForRoom(roomID)
+	if err != nil {
+		return false, err
+	}
+	resolve := func(alias id.RoomAlias) (id.RoomID, bool) {
+		resp, err := b.AS.BotIntent().ResolveAlias(ctx, alias)
+		if err != nil {
+			b.Log.Warn().Err(err).Str("alias", alias.String()).Msg("Failed to resolve allowed room alias")
+			return "", false
+		}
+		return resp.RoomID, true
+	}
+	return roomAllowed(roomID, hasHooks, b.Cfg.AllowedRooms, resolve), nil
+}
+
+// roomAllowed is the pure allowlist decision. A room is allowed when it has at
+// least one webhook, or when it is listed in allowedRooms by room ID or by an
+// alias that resolveAlias maps back to it. resolveAlias may be nil to disable
+// alias resolution (e.g. no homeserver). It performs no Matrix or database
+// calls so the rule is directly testable.
+func roomAllowed(roomID id.RoomID, hasHooks bool, allowedRooms []string, resolveAlias func(id.RoomAlias) (id.RoomID, bool)) bool {
+	if hasHooks {
+		return true
+	}
+	for _, entry := range allowedRooms {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if strings.HasPrefix(entry, "#") {
+			if resolveAlias == nil {
+				continue
+			}
+			if resolved, ok := resolveAlias(id.RoomAlias(entry)); ok && resolved == roomID {
+				return true
+			}
+			continue
+		}
+		if id.RoomID(entry) == roomID {
+			return true
+		}
+	}
+	return false
+}
+
+// WarnDisallowedJoinedRooms logs a warning for every room the bot is joined to
+// that is no longer allowed (no webhook and not in allowed_rooms). It only
+// logs; leaving rooms is left to the operator.
+func (b *Bridge) WarnDisallowedJoinedRooms(ctx context.Context) {
+	resp, err := b.AS.BotIntent().JoinedRooms(ctx)
+	if err != nil {
+		b.Log.Warn().Err(err).Msg("Failed to list joined rooms for the allowlist check")
+		return
+	}
+	for _, roomID := range resp.JoinedRooms {
+		allowed, err := b.roomAllowedFor(ctx, roomID)
+		if err != nil {
+			b.Log.Warn().Err(err).Str("room_id", roomID.String()).Msg("Failed to check room allowlist")
+			continue
+		}
+		if !allowed {
+			b.Log.Warn().Str("room_id", roomID.String()).
+				Msg("Bot is joined to a room that is not allowed (no webhook, not in allowed_rooms)")
+		}
+	}
+}
+
+// HandleBotMessage ignores messages sent to the bot. Management is done
+// entirely through the CLI; bot commands are intentionally not supported.
 func (b *Bridge) HandleBotMessage(ctx context.Context, evt *event.Event) {
 	if evt.Sender == b.AS.BotMXID() {
 		return
 	}
 	b.Log.Debug().Str("sender", evt.Sender.String()).Str("room_id", evt.RoomID.String()).
-		Msg("Ignoring message to bot (bot commands are not implemented yet)")
+		Msg("Ignoring message to bot (management is done with the CLI; bot commands are not supported)")
 }

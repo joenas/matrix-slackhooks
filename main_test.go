@@ -1,9 +1,43 @@
 package main
 
 import (
+	"context"
 	"regexp"
+	"strings"
 	"testing"
+
+	"github.com/joenas/matrix-slackhooks/internal/config"
 )
+
+func TestResolveRoom(t *testing.T) {
+	ctx := context.Background()
+	cfg := &config.Config{ServerName: "example.com", BotLocalpart: "slackhooks", HomeserverURL: "http://localhost:8008"}
+
+	valid := []string{
+		"!abc:example.com",
+		"!opaque_id:example.com:8448",
+	}
+	for _, id := range valid {
+		got, err := resolveRoom(ctx, cfg, id)
+		if err != nil || got.String() != id {
+			t.Errorf("resolveRoom(%q) = %q, %v; want %q", id, got, err, id)
+		}
+	}
+
+	for _, bad := range []string{"", "abc:example.com", "!abc", "!:", "some random text"} {
+		if got, err := resolveRoom(ctx, cfg, bad); err == nil {
+			t.Errorf("resolveRoom(%q) = %q; expected an error", bad, got)
+		}
+	}
+
+	// An alias needs a token to resolve; without one it must fail with a clear
+	// message rather than silently accepting the alias.
+	cfg.ASToken = ""
+	if _, err := resolveRoom(ctx, cfg, "#room:example.com"); err == nil ||
+		!strings.Contains(err.Error(), "as_token is not configured") {
+		t.Errorf("alias without token: unexpected error %v", err)
+	}
+}
 
 func TestUserNamespaceRegexes(t *testing.T) {
 	userRaw, botRaw := userNamespaceRegexes("_slackhook_", "slackhooks", "localhost")

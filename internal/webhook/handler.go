@@ -2,9 +2,11 @@ package webhook
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -12,6 +14,11 @@ import (
 )
 
 const maxBodySize = 1 << 20
+
+// sendTimeout bounds how long a webhook request waits for the homeserver.
+// Slack-style senders usually give up well before a minute; without a bound a
+// hung homeserver ties up the request while mautrix retries.
+var sendTimeout = 25 * time.Second
 
 // Sender delivers a parsed webhook payload into a Matrix room.
 type Sender interface {
@@ -62,7 +69,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Missing text", http.StatusBadRequest)
 		return
 	}
-	if err = h.Sender.Send(r.Context(), hook, payload); err != nil {
+	sendCtx, cancel := context.WithTimeout(r.Context(), sendTimeout)
+	defer cancel()
+	if err = h.Sender.Send(sendCtx, hook, payload); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			log.Warn().Msg("Timed out waiting for homeserver")
+			http.Error(w, "Matrix homeserver unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		log.Error().Err(err).Msg("Failed to send webhook message")
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return

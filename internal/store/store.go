@@ -12,6 +12,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/rs/zerolog/log"
 	"maunium.net/go/mautrix/id"
 )
 
@@ -19,7 +20,19 @@ type DB struct {
 	db *sql.DB
 }
 
-const schema = `
+// migrations is the ordered list of schema migrations. Entry i upgrades the
+// schema from PRAGMA user_version i to i+1, so len(migrations) is the schema
+// version this binary expects. Append new entries at the end and never
+// reorder or edit an existing one.
+var migrations = []func(tx *sql.Tx) error{
+	migrateV1,
+}
+
+// migrationV1SQL is the initial schema, matching the one-off schema the
+// database was created with before migrations existed. It uses
+// CREATE TABLE IF NOT EXISTS so it is a no-op on those existing databases and
+// creates everything on a fresh one.
+const migrationV1SQL = `
 CREATE TABLE IF NOT EXISTS hooks (
 	token TEXT PRIMARY KEY,
 	room_id TEXT NOT NULL,
@@ -47,6 +60,21 @@ CREATE TABLE IF NOT EXISTS avatars (
 );
 `
 
+func migrateV1(tx *sql.Tx) error {
+	_, err := tx.Exec(migrationV1SQL)
+	return err
+}
+
+// dsn builds the modernc.org/sqlite connection string. WAL mode and a busy
+// timeout let a second process (the CLI, e.g. via docker exec) write to the
+// database while the service holds it, without SQLITE_BUSY errors.
+func dsn(path string) string {
+	return "file:" + path +
+		"?_pragma=busy_timeout(5000)" +
+		"&_pragma=journal_mode(WAL)" +
+		"&_pragma=foreign_keys(1)"
+}
+
 func Open(path string) (*DB, error) {
 	dir := filepath.Dir(path)
 	if dir != "" && dir != "." {
@@ -54,17 +82,94 @@ func Open(path string) (*DB, error) {
 			return nil, fmt.Errorf("create db directory: %w", err)
 		}
 	}
-	sqlDB, err := sql.Open("sqlite", path)
+	sqlDB, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, err
 	}
-	// modernc.org/sqlite is a single-writer database; one connection avoids lock contention.
+	// modernc.org/sqlite is a single-writer database; one connection per
+	// process avoids lock contention. Cross-process concurrency comes from WAL
+	// plus the busy timeout in the DSN.
 	sqlDB.SetMaxOpenConns(1)
-	if _, err = sqlDB.Exec(schema); err != nil {
+	if err = migrate(sqlDB, path); err != nil {
 		_ = sqlDB.Close()
-		return nil, fmt.Errorf("create schema: %w", err)
+		return nil, err
 	}
 	return &DB{db: sqlDB}, nil
+}
+
+// migrate brings the schema from its current PRAGMA user_version up to
+// len(migrations), refusing to open a database written by a newer binary.
+func migrate(sqlDB *sql.DB, path string) error {
+	var version int
+	if err := sqlDB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	latest := len(migrations)
+	if version > latest {
+		return fmt.Errorf("database schema v%d is newer than this binary supports (v%d); refusing to downgrade", version, latest)
+	} else if version == latest {
+		return nil
+	}
+	// Back up any database that already holds a schema before migrating it. A
+	// brand-new empty file (v0 with no tables) has nothing to back up.
+	if version > 0 {
+		if err := backupBeforeMigration(sqlDB, path, version); err != nil {
+			return err
+		}
+	} else if hasSchema, err := hasTables(sqlDB); err != nil {
+		return err
+	} else if hasSchema {
+		if err := backupBeforeMigration(sqlDB, path, version); err != nil {
+			return err
+		}
+	}
+	for i := version; i < latest; i++ {
+		tx, err := sqlDB.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration v%d: %w", i+1, err)
+		}
+		if err = migrations[i](tx); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("migration v%d failed: %w", i+1, err)
+		}
+		// PRAGMA assignment does not accept a bound parameter; i+1 is a plain int.
+		if _, err = tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", i+1)); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("set schema version to v%d: %w", i+1, err)
+		}
+		if err = tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration v%d: %w", i+1, err)
+		}
+		log.Info().Int("version", i+1).Msg("Applied database schema migration")
+	}
+	return nil
+}
+
+func hasTables(sqlDB *sql.DB) (bool, error) {
+	var n int
+	if err := sqlDB.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&n); err != nil {
+		return false, fmt.Errorf("check for existing tables: %w", err)
+	}
+	return n > 0, nil
+}
+
+// backupBeforeMigration snapshots the database to a timestamped file next to
+// the original and logs the path, so a failed migration can always be undone.
+func backupBeforeMigration(sqlDB *sql.DB, path string, from int) error {
+	dest := fmt.Sprintf("%s.bak-v%d-%s", path, from, time.Now().Format("20060102-150405"))
+	if _, err := sqlDB.Exec(`VACUUM INTO ?`, dest); err != nil {
+		return fmt.Errorf("pre-migration backup: %w", err)
+	}
+	log.Info().Str("path", dest).Int("from_version", from).Msg("Backed up database before schema migration")
+	return nil
+}
+
+// Backup writes a consistent snapshot of the database to path using
+// VACUUM INTO. It is safe to run against a live database (WAL mode); the
+// destination must not already exist.
+func (d *DB) Backup(path string) error {
+	_, err := d.db.Exec(`VACUUM INTO ?`, path)
+	return err
 }
 
 func (d *DB) Close() error {
@@ -79,6 +184,8 @@ func NewToken() string {
 	return hex.EncodeToString(buf)
 }
 
+const hookColumns = `token, room_id, label, created_by, created_at`
+
 type Hook struct {
 	Token     string
 	RoomID    id.RoomID
@@ -87,23 +194,79 @@ type Hook struct {
 	CreatedAt time.Time
 }
 
-func (d *DB) GetHook(token string) (*Hook, error) {
-	row := d.db.QueryRow(`SELECT token, room_id, label, created_by, created_at FROM hooks WHERE token = ?`, token)
+type hookScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanHook(row hookScanner) (*Hook, error) {
 	hook := &Hook{}
 	var createdAt int64
-	err := row.Scan(&hook.Token, &hook.RoomID, &hook.Label, &hook.CreatedBy, &createdAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	} else if err != nil {
+	if err := row.Scan(&hook.Token, &hook.RoomID, &hook.Label, &hook.CreatedBy, &createdAt); err != nil {
 		return nil, err
 	}
 	hook.CreatedAt = time.Unix(createdAt, 0)
 	return hook, nil
 }
 
+func (d *DB) GetHook(token string) (*Hook, error) {
+	row := d.db.QueryRow(`SELECT `+hookColumns+` FROM hooks WHERE token = ?`, token)
+	hook, err := scanHook(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	return hook, nil
+}
+
+// ListHooks returns hooks ordered by creation time. An empty roomID lists
+// every hook, otherwise only hooks for that room.
+func (d *DB) ListHooks(roomID id.RoomID) ([]Hook, error) {
+	query := `SELECT ` + hookColumns + ` FROM hooks`
+	var args []any
+	if roomID != "" {
+		query += ` WHERE room_id = ?`
+		args = append(args, roomID.String())
+	}
+	query += ` ORDER BY created_at, token`
+	return d.queryHooks(query, args...)
+}
+
+// FindHooksByPrefix returns hooks whose token starts with prefix. An empty
+// prefix matches every hook; the caller decides whether a match set is usable.
+func (d *DB) FindHooksByPrefix(prefix string) ([]Hook, error) {
+	return d.queryHooks(
+		`SELECT `+hookColumns+` FROM hooks WHERE substr(token, 1, ?) = ? ORDER BY token`,
+		len(prefix), prefix)
+}
+
+func (d *DB) queryHooks(query string, args ...any) ([]Hook, error) {
+	rows, err := d.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var hooks []Hook
+	for rows.Next() {
+		hook, err := scanHook(rows)
+		if err != nil {
+			return nil, err
+		}
+		hooks = append(hooks, *hook)
+	}
+	return hooks, rows.Err()
+}
+
 func (d *DB) InsertHook(hook *Hook) error {
 	_, err := d.db.Exec(`INSERT INTO hooks (token, room_id, label, created_by, created_at) VALUES (?, ?, ?, ?, ?)`,
 		hook.Token, hook.RoomID.String(), hook.Label, hook.CreatedBy, hook.CreatedAt.Unix())
+	return err
+}
+
+// DeleteHook removes the hook with the given token. It is not an error if no
+// such hook exists; callers resolving by prefix should check first.
+func (d *DB) DeleteHook(token string) error {
+	_, err := d.db.Exec(`DELETE FROM hooks WHERE token = ?`, token)
 	return err
 }
 

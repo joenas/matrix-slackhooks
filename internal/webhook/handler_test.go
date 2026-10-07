@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -104,5 +105,50 @@ func TestHandlerMethodNotAllowed(t *testing.T) {
 	rec := doRequest(handler, http.MethodGet, "/hooks/goodtoken", "", "")
 	if rec.Code != http.StatusMethodNotAllowed && rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 405/404 for GET, got %d", rec.Code)
+	}
+}
+
+// blockingSender blocks until its context is done, standing in for a hung
+// homeserver, and returns the context error like a real client would.
+type blockingSender struct{}
+
+func (blockingSender) Send(ctx context.Context, _ *store.Hook, _ *Payload) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestHandlerSendTimeout(t *testing.T) {
+	handler, _, _ := newTestHandler(t)
+	handler.Sender = blockingSender{}
+	defer func(old time.Duration) { sendTimeout = old }(sendTimeout)
+	sendTimeout = 20 * time.Millisecond
+
+	rec := doRequest(handler, http.MethodPost, "/hooks/goodtoken", `{"text": "hi"}`, "application/json")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 on send timeout, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Matrix homeserver unavailable") {
+		t.Errorf("unexpected body: %q", rec.Body.String())
+	}
+}
+
+type deadlineRecorderSender struct{ hadDeadline *bool }
+
+func (s deadlineRecorderSender) Send(ctx context.Context, _ *store.Hook, _ *Payload) error {
+	_, ok := ctx.Deadline()
+	*s.hadDeadline = ok
+	return nil
+}
+
+func TestHandlerSendHasDeadline(t *testing.T) {
+	handler, _, _ := newTestHandler(t)
+	had := false
+	handler.Sender = deadlineRecorderSender{hadDeadline: &had}
+	rec := doRequest(handler, http.MethodPost, "/hooks/goodtoken", `{"text": "hi"}`, "application/json")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !had {
+		t.Error("Send should receive a context with a deadline")
 	}
 }

@@ -11,19 +11,20 @@ import (
 )
 
 type Config struct {
-	HomeserverURL  string `yaml:"homeserver_url"`
-	ServerName     string `yaml:"server_name"`
-	ASToken        string `yaml:"as_token"`
-	HSToken        string `yaml:"hs_token"`
-	ASAddress      string `yaml:"as_address"`
-	AppserviceURL  string `yaml:"appservice_url"`
-	WebhookAddress string `yaml:"webhook_address"`
-	PublicBaseURL  string `yaml:"public_base_url"`
-	DBPath         string `yaml:"db"`
-	BotLocalpart   string `yaml:"bot_localpart"`
-	BotDisplayName string `yaml:"bot_displayname"`
-	UserPrefix     string `yaml:"user_prefix"`
-	DefaultMsgtype string `yaml:"default_msgtype"`
+	HomeserverURL  string   `yaml:"homeserver_url"`
+	ServerName     string   `yaml:"server_name"`
+	ASToken        string   `yaml:"as_token"`
+	HSToken        string   `yaml:"hs_token"`
+	ASAddress      string   `yaml:"as_address"`
+	AppserviceURL  string   `yaml:"appservice_url"`
+	WebhookAddress string   `yaml:"webhook_address"`
+	PublicBaseURL  string   `yaml:"public_base_url"`
+	DBPath         string   `yaml:"db"`
+	BotLocalpart   string   `yaml:"bot_localpart"`
+	BotDisplayName string   `yaml:"bot_displayname"`
+	UserPrefix     string   `yaml:"user_prefix"`
+	DefaultMsgtype string   `yaml:"default_msgtype"`
+	AllowedRooms   []string `yaml:"allowed_rooms"`
 }
 
 func Default() *Config {
@@ -74,6 +75,16 @@ func (c *Config) applyEnv() {
 		if val, ok := os.LookupEnv(o.key); ok && val != "" {
 			*o.target = val
 		}
+	}
+	// allowed_rooms is a list, so it gets a dedicated comma-separated override.
+	if val, ok := os.LookupEnv("SLACKHOOKS_ALLOWED_ROOMS"); ok {
+		var rooms []string
+		for _, room := range strings.Split(val, ",") {
+			if room = strings.TrimSpace(room); room != "" {
+				rooms = append(rooms, room)
+			}
+		}
+		c.AllowedRooms = rooms
 	}
 }
 
