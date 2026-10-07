@@ -30,6 +30,9 @@ import (
 
 const asID = "slackhooks"
 
+// version is set at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 const usage = `Usage: slackhooks [-config config.yaml] <command> [args]
 
 Commands:
@@ -38,6 +41,8 @@ Commands:
   list-hooks [room-id]                            List configured webhooks (optionally for one room)
   remove-hook <token-or-prefix>                   Delete a webhook by token or unique prefix
   backup <path>                                   Write a consistent database snapshot (safe while running)
+  healthcheck                                     Probe the appservice liveness endpoint (exit 0 if healthy)
+  version                                         Print the version
   start                                           Run the appservice + webhook server (default)
 `
 
@@ -45,7 +50,7 @@ func main() {
 	log.Logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).
 		With().Timestamp().Logger()
 
-	configPath := flag.String("config", "config.yaml", "config file path")
+	configPath := flag.String("config", config.DefaultPath(), "config file path (default: $SLACKHOOKS_CONFIG or config.yaml)")
 	flag.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	flag.Parse()
 
@@ -66,6 +71,10 @@ func main() {
 		cmdRemoveHook(*configPath, cmdArgs)
 	case "backup":
 		cmdBackup(*configPath, cmdArgs)
+	case "healthcheck":
+		cmdHealthcheck(*configPath, cmdArgs)
+	case "version":
+		fmt.Println(version)
 	case "start":
 		runStart(*configPath, cmdArgs)
 	case "-h", "--help", "help":
@@ -77,13 +86,21 @@ func main() {
 	}
 }
 
-func loadConfig(path string) *config.Config {
+// openConfig loads the config file, treating a missing file at the effective
+// default path (config.yaml or $SLACKHOOKS_CONFIG) as "defaults plus env
+// overrides". An explicit -config path is required to exist.
+func openConfig(path string) (*config.Config, error) {
 	cfg, err := config.Load(path)
+	if err == nil || !(errors.Is(err, os.ErrNotExist) && path == config.DefaultPath()) {
+		return cfg, err
+	}
+	return config.Load("")
+}
+
+func loadConfig(path string) *config.Config {
+	cfg, err := openConfig(path)
 	if err != nil {
-		if !(errors.Is(err, os.ErrNotExist) && path == "config.yaml") {
-			log.Fatal().Err(err).Msg("Failed to load config")
-		}
-		cfg = config.Default()
+		log.Fatal().Err(err).Msg("Failed to load config")
 	}
 	if err = cfg.Validate(); err != nil {
 		log.Fatal().Err(err).Msg("Invalid config")
@@ -182,10 +199,20 @@ func resolveRoom(ctx context.Context, cfg *config.Config, arg string) (id.RoomID
 	}
 }
 
+// defaultCreatedBy is the default for add-hook's -by flag: $USER, falling
+// back to "cli" when it is unset (e.g. inside the Docker image, where there
+// is no $USER), so hooks never get an empty "created by".
+func defaultCreatedBy() string {
+	if user := os.Getenv("USER"); user != "" {
+		return user
+	}
+	return "cli"
+}
+
 func cmdAddHook(configPath string, args []string) {
 	fs := flag.NewFlagSet("add-hook", flag.ExitOnError)
 	label := fs.String("label", "", "optional label for the webhook (used as display name fallback)")
-	createdBy := fs.String("by", os.Getenv("USER"), "who is creating this webhook")
+	createdBy := fs.String("by", defaultCreatedBy(), `who is creating this webhook (default: $USER, or "cli" when unset)`)
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
 		log.Fatal().Msg("usage: slackhooks add-hook [-label label] [-by user] <room>")
@@ -324,6 +351,37 @@ func cmdBackup(configPath string, args []string) {
 	fmt.Printf("Backup written to %s\n", dest)
 }
 
+// cmdHealthcheck probes the appservice liveness endpoint, for use as a
+// Docker HEALTHCHECK. It needs no config file, only the port the appservice
+// listens on.
+func cmdHealthcheck(configPath string, args []string) {
+	fs := flag.NewFlagSet("healthcheck", flag.ExitOnError)
+	_ = fs.Parse(args)
+
+	cfg, err := openConfig(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: cannot load config: %v\n", err)
+		os.Exit(1)
+	}
+	port := parseHostConfig(cfg.ASAddress).Port
+	if port == 0 {
+		fmt.Fprintf(os.Stderr, "healthcheck: no TCP port in as_address %q\n", cfg.ASAddress)
+		os.Exit(1)
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/_matrix/mau/live", port)
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: GET %s failed: %v\n", url, err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "healthcheck: GET %s returned %s\n", url, resp.Status)
+		os.Exit(1)
+	}
+}
+
 func parseHostConfig(addr string) appservice.HostConfig {
 	host := appservice.HostConfig{Hostname: addr}
 	if strings.HasPrefix(addr, "/") {
@@ -343,6 +401,7 @@ func runStart(configPath string, args []string) {
 	fs := flag.NewFlagSet("start", flag.ExitOnError)
 	_ = fs.Parse(args)
 
+	log.Info().Str("version", version).Msg("Starting slackhooks")
 	cfg := loadConfig(configPath)
 	if err := cfg.ValidateTokens(); err != nil {
 		log.Fatal().Err(err).Msg("Cannot start")

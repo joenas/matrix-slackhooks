@@ -43,6 +43,7 @@ go.work.sum
 *.db-shm
 dev/synapse/
 registration.yaml
+docker.sh
 
 # Local configs (config.yaml.example is the tracked template)
 config.yaml
