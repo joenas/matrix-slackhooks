@@ -1,5 +1,8 @@
 set positional-arguments
 
+# Image name for dockerctl (default would be the checkout's dir name)
+export IMAGE_NAME := env("IMAGE_NAME", "slackhooks")
+
 version := `git describe --tags --always --dirty 2>/dev/null || echo dev`
 ldflags := "-s -w -X main.version=" + version
 
