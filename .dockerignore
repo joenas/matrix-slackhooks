@@ -1,0 +1,11 @@
+.git
+*.db*
+dev/
+config.yaml
+config.yaml.*
+!config.yaml.example
+/slackhooks
+/slackhooks-*
+registration.yaml
+docker.sh
+justfile

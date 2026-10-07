@@ -38,3 +38,7 @@ push *ARCH:
 # Build and push the Docker image
 publish ARCH="amd64":
   dockerctl build push {{ ARCH }}
+
+# Smoke-test the image locally (env from .env, data in the slackhooks-dev volume)
+docker-run *ARGS:
+  docker run --rm -it -p 29329:29329 -v slackhooks-dev:/data --env-file .env $IMAGE_NAME:{{ version }} "$@"

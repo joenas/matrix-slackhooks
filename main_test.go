@@ -2,12 +2,54 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/joenas/matrix-slackhooks/internal/config"
 )
+
+func TestOpenConfigUsesSlackhooksConfigEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("homeserver_url: https://from-file\nserver_name: file.example\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SLACKHOOKS_CONFIG", path)
+
+	cfg, err := openConfig(config.DefaultPath())
+	if err != nil {
+		t.Fatalf("openConfig with $SLACKHOOKS_CONFIG file: %v", err)
+	}
+	if cfg.HomeserverURL != "https://from-file" || cfg.ServerName != "file.example" {
+		t.Errorf("config from $SLACKHOOKS_CONFIG not loaded: %+v", cfg)
+	}
+}
+
+func TestOpenConfigMissingDefaultFallsBackToEnv(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv("SLACKHOOKS_CONFIG", missing)
+	t.Setenv("SLACKHOOKS_HOMESERVER_URL", "https://from-env")
+	t.Setenv("SLACKHOOKS_SERVER_NAME", "env.example")
+
+	cfg, err := openConfig(config.DefaultPath())
+	if err != nil {
+		t.Fatalf("missing default config should fall back to defaults+env, got: %v", err)
+	}
+	if cfg.HomeserverURL != "https://from-env" || cfg.ServerName != "env.example" {
+		t.Errorf("env-only fallback broken: %+v", cfg)
+	}
+	if cfg.DBPath != config.Default().DBPath {
+		t.Errorf("defaults not applied: %+v", cfg)
+	}
+
+	// An explicit path that does not exist must still be an error.
+	if _, err = openConfig(missing + ".other"); err == nil {
+		t.Fatal("explicit missing config path should error")
+	}
+}
 
 func TestResolveRoom(t *testing.T) {
 	ctx := context.Background()

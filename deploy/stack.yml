@@ -1,0 +1,88 @@
+# Example Docker Swarm stack for slackhooks. Adjust names/URLs to your setup;
+# nothing here is tied to a specific infrastructure.
+#
+# Set the image to deploy in your environment before deploying:
+#
+#   export SLACKHOOKS_IMAGE=<registry>/slackhooks:<tag>
+#
+# First-time setup: generate the appservice registration and tokens once
+# (no config needed, env-only works because the container defaults apply):
+#
+#   docker run --rm \
+#     -e SLACKHOOKS_SERVER_NAME=example.com \
+#     -e SLACKHOOKS_HOMESERVER_URL=https://matrix.example.com \
+#     -e SLACKHOOKS_APPSERVICE_URL=http://slackhooks_slackhooks:29329 \
+#     "$SLACKHOOKS_IMAGE" generate-registration
+#
+# That prints the registration YAML and two random tokens. Save the
+# registration where Synapse can read it (app_service_config_files), then
+# create the two Swarm secrets from the printed tokens:
+#
+#   printf '%s' '<as_token>' | docker secret create slackhooks_as_token -
+#   printf '%s' '<hs_token>' | docker secret create slackhooks_hs_token -
+#
+# Deploy (the external "matrix" overlay network must also be attached to
+# Synapse so it can reach the appservice port):
+#
+#   docker network create --driver overlay --attachable matrix
+#   docker stack deploy -c deploy/stack.yml slackhooks
+
+services:
+  slackhooks:
+    image: ${SLACKHOOKS_IMAGE:?set SLACKHOOKS_IMAGE to <registry>/slackhooks:<tag>}
+    env:
+      SLACKHOOKS_HOMESERVER_URL: "https://matrix.example.com"
+      SLACKHOOKS_SERVER_NAME: "example.com"
+      # How Synapse reaches this service on the shared overlay network.
+      # Swarm prefixes the service name with the stack name.
+      SLACKHOOKS_APPSERVICE_URL: "http://slackhooks_slackhooks:29329"
+      # Tokens via Swarm secrets, mounted as files (never in `docker inspect`).
+      SLACKHOOKS_AS_TOKEN_FILE: /run/secrets/slackhooks_as_token
+      SLACKHOOKS_HS_TOKEN_FILE: /run/secrets/slackhooks_hs_token
+      # Separate webhook listener; only this port goes through the reverse
+      # proxy. The appservice port (29329) stays on the internal network.
+      SLACKHOOKS_WEBHOOK_ADDRESS: "0.0.0.0:29330"
+      # Base URL used when printing webhook URLs.
+      SLACKHOOKS_PUBLIC_BASE_URL: "https://hooks.example.com"
+      # Optional extra rooms the bot may join besides rooms with hooks
+      # (comma-separated room IDs/aliases).
+      SLACKHOOKS_ALLOWED_ROOMS: ""
+    secrets:
+      - slackhooks_as_token
+      - slackhooks_hs_token
+    volumes:
+      # Must be a LOCAL volume (or other block storage with POSIX locking):
+      # SQLite in WAL mode does not work on NFS.
+      - slackhooks_data:/data
+    ports:
+      # Only the webhook port is published; the reverse proxy talks to this.
+      - target: 29330
+        published: "29330"
+        protocol: tcp
+        mode: ingress
+    networks:
+      - matrix
+    deploy:
+      mode: replicated
+      replicas: 1
+      update_config:
+        # One SQLite file and one appservice registration: two instances
+        # must never run at once, not even briefly during an update.
+        order: stop-first
+
+networks:
+  # Create once: docker network create --driver overlay --attachable matrix
+  matrix:
+    external: true
+
+secrets:
+  slackhooks_as_token:
+    external: true
+  slackhooks_hs_token:
+    external: true
+
+volumes:
+  # Created by Swarm on the node where the task runs; local driver only
+  # (see the volume comment above). Mark it `external: true` and pre-create
+  # it if you manage volumes yourself.
+  slackhooks_data:

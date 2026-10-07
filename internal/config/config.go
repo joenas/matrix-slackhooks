@@ -38,6 +38,15 @@ func Default() *Config {
 	}
 }
 
+// DefaultPath returns the config file path used when -config is not given:
+// $SLACKHOOKS_CONFIG if set, otherwise "config.yaml".
+func DefaultPath() string {
+	if p := os.Getenv("SLACKHOOKS_CONFIG"); p != "" {
+		return p
+	}
+	return "config.yaml"
+}
+
 func Load(path string) (*Config, error) {
 	cfg := Default()
 	if path != "" {
@@ -50,6 +59,9 @@ func Load(path string) (*Config, error) {
 		}
 	}
 	cfg.applyEnv()
+	if err := cfg.applyEnvTokenFiles(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -68,6 +80,7 @@ func (c *Config) applyEnv() {
 		{"SLACKHOOKS_PUBLIC_BASE_URL", &c.PublicBaseURL},
 		{"SLACKHOOKS_DB", &c.DBPath},
 		{"SLACKHOOKS_BOT_LOCALPART", &c.BotLocalpart},
+		{"SLACKHOOKS_BOT_DISPLAYNAME", &c.BotDisplayName},
 		{"SLACKHOOKS_USER_PREFIX", &c.UserPrefix},
 		{"SLACKHOOKS_DEFAULT_MSGTYPE", &c.DefaultMsgtype},
 	}
@@ -86,6 +99,30 @@ func (c *Config) applyEnv() {
 		}
 		c.AllowedRooms = rooms
 	}
+}
+
+// applyEnvTokenFiles loads secrets from files (Docker/Swarm secrets). The
+// *_FILE variables take precedence over the plain env var overrides.
+func (c *Config) applyEnvTokenFiles() error {
+	overrides := []struct {
+		key    string
+		target *string
+	}{
+		{"SLACKHOOKS_AS_TOKEN_FILE", &c.ASToken},
+		{"SLACKHOOKS_HS_TOKEN_FILE", &c.HSToken},
+	}
+	for _, o := range overrides {
+		path, ok := os.LookupEnv(o.key)
+		if !ok || path == "" {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", o.key, err)
+		}
+		*o.target = strings.TrimSpace(string(data))
+	}
+	return nil
 }
 
 func (c *Config) Validate() error {

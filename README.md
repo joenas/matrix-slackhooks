@@ -31,14 +31,18 @@ go build -o slackhooks .
 ## Configuration
 
 Copy `config.yaml.example` to `config.yaml` and adjust homeserver URL, server
-name, tokens and the public base URL. Any setting can also be overridden with
-an environment variable:
+name, tokens and the public base URL. The config path defaults to
+`$SLACKHOOKS_CONFIG` if set, else `config.yaml`. Any setting can also be
+overridden with an environment variable:
 `SLACKHOOKS_HOMESERVER_URL`, `SLACKHOOKS_SERVER_NAME`, `SLACKHOOKS_AS_TOKEN`,
 `SLACKHOOKS_HS_TOKEN`, `SLACKHOOKS_AS_ADDRESS`, `SLACKHOOKS_APPSERVICE_URL`,
 `SLACKHOOKS_WEBHOOK_ADDRESS`, `SLACKHOOKS_PUBLIC_BASE_URL`, `SLACKHOOKS_DB`,
-`SLACKHOOKS_BOT_LOCALPART`, `SLACKHOOKS_USER_PREFIX`,
-`SLACKHOOKS_DEFAULT_MSGTYPE`, `SLACKHOOKS_ALLOWED_ROOMS` (comma-separated list
-of room IDs/aliases).
+`SLACKHOOKS_BOT_LOCALPART`, `SLACKHOOKS_BOT_DISPLAYNAME`,
+`SLACKHOOKS_USER_PREFIX`, `SLACKHOOKS_DEFAULT_MSGTYPE`,
+`SLACKHOOKS_ALLOWED_ROOMS` (comma-separated list of room IDs/aliases).
+`SLACKHOOKS_AS_TOKEN_FILE` / `SLACKHOOKS_HS_TOKEN_FILE` read the tokens from
+the named files (Docker/Swarm secrets) and take precedence over the plain
+`SLACKHOOKS_AS_TOKEN` / `SLACKHOOKS_HS_TOKEN` env vars.
 
 ## Registration
 
@@ -139,6 +143,76 @@ Send a JSON POST (or `application/x-www-form-urlencoded` with the JSON in a
 Responses match Slack: `ok` (200) on success, 400 for a bad payload, 404 for
 an unknown token. If the homeserver does not answer within 25s the request
 fails with 503 ("Matrix homeserver unavailable").
+
+## Docker / Swarm
+
+A multi-stage `Dockerfile` builds a static binary (`CGO_ENABLED=0`) and puts
+it on a small Alpine runtime image running as uid 10001. The image defaults
+to `SLACKHOOKS_CONFIG=/data/config.yaml`, `SLACKHOOKS_DB=/data/slackhooks.db`
+and listens on port 29329; `/data` is a volume owned by the container user, so
+a fresh named volume picks up the right ownership. The config file is
+optional: with no file present everything comes from `SLACKHOOKS_*`
+environment variables, and tokens can be mounted as files with
+`SLACKHOOKS_AS_TOKEN_FILE` / `SLACKHOOKS_HS_TOKEN_FILE` (Docker/Swarm
+secrets). A built-in `slackhooks healthcheck` subcommand backs the image's
+`HEALTHCHECK` (no curl/wget in the image, port read from the config).
+
+Build and push (uses the `dockerctl` script from the dotfiles; needs
+`REGISTRY_HOST`, image name `slackhooks` from the justfile):
+
+```
+just publish           # = dockerctl build push amd64, tagged git describe --tags --always --dirty
+just build             # build only, optionally: just build arm64
+```
+
+Without `dockerctl` the plain equivalent is:
+
+```
+docker build --build-arg APP_VERSION=$(git describe --tags --always --dirty) -t slackhooks .
+```
+
+Other justfile recipes: `just test` (vet + gofmt + tests), `just bin-linux`
+(cross-compiled static binary), `just run …` (`go run .` with the same
+ldflags), `just docker-run …` (local smoke test of the image with a
+`slackhooks-dev` volume and `--env-file .env`).
+
+### Deploying
+
+`deploy/stack.yml` is an example Swarm stack. Generate the appservice
+registration and tokens once and create the Swarm secrets (see the comments
+on top of that file):
+
+```
+docker run --rm \
+    -e SLACKHOOKS_SERVER_NAME=example.com \
+    -e SLACKHOOKS_HOMESERVER_URL=https://matrix.example.com \
+    "$SLACKHOOKS_IMAGE" generate-registration
+```
+
+Hand the printed registration to Synapse, store the two tokens as external
+secrets, then `docker stack deploy -c deploy/stack.yml slackhooks`. Two
+details matter: replicas are pinned to 1 with `order: stop-first` (SQLite
+plus one registration must never have two processes on it), and the `/data`
+volume must be local (WAL on NFS breaks). Only the webhook port is published
+for the reverse proxy; the appservice port stays on the internal overlay
+network shared with Synapse.
+
+### Managing hooks on the running service
+
+The CLI can run against the live database while the service keeps running.
+`docker exec` does not use the image's `ENTRYPOINT`, so pass the binary name.
+In Swarm the container is named `<stack>_slackhooks.1.<id>`, so run this on
+the node where the task is scheduled:
+
+```
+docker exec -it $(docker ps -qf name=<stack>_slackhooks) slackhooks add-hook -label CI '!room:server'
+docker exec -it $(docker ps -qf name=<stack>_slackhooks) slackhooks list-hooks
+docker exec $(docker ps -qf name=<stack>_slackhooks) slackhooks backup /data/backup.db
+```
+
+No `-config` flag needed: `SLACKHOOKS_CONFIG` and the DB path come from the
+image environment. Back up with `slackhooks backup` (a consistent snapshot via
+`VACUUM INTO`), not `cp` of the live database, which would miss the WAL file.
 
 ## Development
 
