@@ -36,5 +36,15 @@ bot_displayname: Slack Hook
 # Prefix for the puppet users created per webhook source.
 user_prefix: _slackhook_
 
+# Extra rooms the bot may join, besides every room that has a webhook. Each
+# entry is a room ID (!localpart:server) or an alias (#localpart:server).
+# Rooms with a webhook are always allowed automatically, so to let the bot
+# into a room just add a hook for it and invite the bot; you only need this
+# list for rooms without a hook. Env override: SLACKHOOKS_ALLOWED_ROOMS
+# (comma-separated).
+# allowed_rooms:
+#   - "#team:example.com"
+#   - "!abcdef:example.com"
+
 # Event type used for messages: m.text or m.notice.
 default_msgtype: m.text

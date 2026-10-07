@@ -19,7 +19,6 @@ kept in SQLite ([modernc.org/sqlite](https://modernc.org/sqlite), no CGO).
 ## Limitations
 
 - Rooms must **not** be encrypted (E2EE is out of scope).
-- Bot management commands are not implemented yet.
 - Slack `attachments`/`blocks` are only minimally supported: each
   attachment's `fallback` (or `text`) is appended as an extra line.
 
@@ -38,7 +37,8 @@ an environment variable:
 `SLACKHOOKS_HS_TOKEN`, `SLACKHOOKS_AS_ADDRESS`, `SLACKHOOKS_APPSERVICE_URL`,
 `SLACKHOOKS_WEBHOOK_ADDRESS`, `SLACKHOOKS_PUBLIC_BASE_URL`, `SLACKHOOKS_DB`,
 `SLACKHOOKS_BOT_LOCALPART`, `SLACKHOOKS_USER_PREFIX`,
-`SLACKHOOKS_DEFAULT_MSGTYPE`.
+`SLACKHOOKS_DEFAULT_MSGTYPE`, `SLACKHOOKS_ALLOWED_ROOMS` (comma-separated list
+of room IDs/aliases).
 
 ## Registration
 
@@ -64,20 +64,54 @@ The appservice (Matrix transaction endpoint) and the webhook endpoint share
 one listener by default; set `webhook_address` to serve the webhooks on a
 separate address.
 
-## Creating webhook URLs
+## Managing webhooks
 
-Webhooks are currently created by inserting rows into the `hooks` table, e.g.
-with the built-in command:
+Webhooks are managed from the command line against the SQLite database. The
+CLI can run while the service is running (the database is in WAL mode with a
+busy timeout, so concurrent access is safe — handy with
+`docker exec … slackhooks add-hook`):
 
 ```
 slackhooks -config config.yaml add-hook -label "CI" '!roomid:localhost'
+slackhooks -config config.yaml add-hook '#my-room:localhost'   # aliases are resolved too
+slackhooks -config config.yaml list-hooks                       # all webhooks
+slackhooks -config config.yaml list-hooks '!roomid:localhost'   # just one room
+slackhooks -config config.yaml remove-hook abc12345             # by token or unique prefix
+slackhooks -config config.yaml backup slackhooks-2026.db        # safe snapshot while running
 ```
 
-It prints a URL like `https://hooks.example.com/hooks/<token>`.
+`add-hook` takes a room ID (`!localpart:server`) or an alias
+(`#localpart:server`, resolved through the homeserver when tokens are set). It
+prints a URL like `https://hooks.example.com/hooks/<token>` and a reminder to
+invite the bot. `remove-hook` needs the full token or a prefix that matches
+exactly one webhook; on ambiguity it lists the candidates.
 
-Before the first message arrives, invite the bot user (`@slackhooks:<server>`)
-to the room — it joins automatically — and make sure the bot has permission to
-invite users, because each puppet joins the room via a bot invite.
+## Room access control
+
+The bot only joins rooms it is meant to be in. A room is **allowed** when it
+has at least one webhook, or when it is listed in `allowed_rooms` (config) /
+`SLACKHOOKS_ALLOWED_ROOMS` (env, comma-separated) as a room ID or alias.
+
+Because rooms with a hook are allowed automatically, the normal flow is:
+**create the hook first, then invite the bot** — it joins on the invite. Inviting
+the bot to a room with neither a hook nor an `allowed_rooms` entry is rejected
+(the bot leaves the invite with a reason). The bot warns in the log at startup
+about any room it is already joined to that is not allowed; it never leaves
+those automatically. Puppets are still only invited to rooms that have hooks.
+
+Make sure the bot has permission to invite users, because each puppet joins
+the room via a bot invite.
+
+## Database
+
+State lives in a single SQLite file (`db` config option). The schema is
+versioned and migrated automatically on startup; you never need to wipe the
+database to upgrade. A database written by a newer binary is refused rather
+than downgraded. Before migrating a database that already holds data, slackhooks
+writes a safety snapshot next to the original
+(`<db>.bak-v<from>-<timestamp>`) and logs its path. Use `slackhooks backup
+<path>` anytime for an on-demand snapshot; it is safe to run while the service
+is up and does not require the `sqlite3` binary.
 
 ## Payload format
 
@@ -103,7 +137,8 @@ Send a JSON POST (or `application/x-www-form-urlencoded` with the JSON in a
 | `format` | Set to `"html"` to pass `text` through as HTML (turt2live compat). |
 
 Responses match Slack: `ok` (200) on success, 400 for a bad payload, 404 for
-an unknown token.
+an unknown token. If the homeserver does not answer within 25s the request
+fails with 503 ("Matrix homeserver unavailable").
 
 ## Development
 
@@ -162,11 +197,11 @@ docker compose -f dev/docker-compose.yaml restart synapse
 ```
 
 Start slackhooks on the host (`slackhooks -config config.yaml start`, it
-listens on port 29329), log into the Synapse web client as the human user,
-create a room and **invite the bot user `@slackhooks:localhost`** to it — it
-joins automatically. The bot also needs permission to invite users, because
-each puppet joins the room via a bot invite. Then create a hook for the room
-and post with curl:
+listens on port 29329), log into the Synapse web client as the human user and
+create a room. Create a hook for that room **first**, then invite the bot user
+`@slackhooks:localhost` — a room with a hook is allowed, so the bot joins the
+invite automatically. (The bot also needs permission to invite users, because
+each puppet joins the room via a bot invite.) Post with curl:
 
 ```
 slackhooks -config config.yaml add-hook '!roomid:localhost'

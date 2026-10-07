@@ -39,6 +39,8 @@ go.work.sum
 # Local state
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
 dev/synapse/
 registration.yaml
 
