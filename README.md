@@ -216,14 +216,17 @@ If you already run slackhooks outside Docker:
 - Update the `url` in Synapse's existing registration file to the in-Swarm
   appservice address (`http://slackhooks_slackhooks:29329`), make sure
   Synapse is attached to the `matrix` overlay network, and restart Synapse.
-- Copy the existing `slackhooks.db` into the `slackhooks_data` volume before
-  the first start, owned by `10001:10001`. Stop the old process first, and
+- Copy the existing `slackhooks.db` into the stack's data volume before the
+  first start, owned by `10001:10001`. `docker stack deploy` prefixes volume
+  names with the stack name, so with the stack named `slackhooks` the volume
+  is `slackhooks_slackhooks_data`; Swarm reuses it if it already exists on the
+  node. Stop the old process first, and
   copy any `-wal`/`-shm` files along with it — or better, take a consistent
   snapshot from the old install with `slackhooks backup` and copy that in as
   `slackhooks.db`. Using a throwaway container on the labelled node:
 
   ```
-  docker run --rm -v slackhooks_data:/data -v $PWD:/src alpine \
+  docker run --rm -v slackhooks_slackhooks_data:/data -v $PWD:/src alpine \
       sh -c 'cp /src/slackhooks.db /data/ && chown 10001:10001 /data/slackhooks.db'
   ```
 
