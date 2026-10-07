@@ -31,8 +31,9 @@ go build -o slackhooks .
 
 ## Configuration
 
-Copy `config.yaml`, adjust homeserver URL, server name, tokens and the public
-base URL. Any setting can also be overridden with an environment variable:
+Copy `config.yaml.example` to `config.yaml` and adjust homeserver URL, server
+name, tokens and the public base URL. Any setting can also be overridden with
+an environment variable:
 `SLACKHOOKS_HOMESERVER_URL`, `SLACKHOOKS_SERVER_NAME`, `SLACKHOOKS_AS_TOKEN`,
 `SLACKHOOKS_HS_TOKEN`, `SLACKHOOKS_AS_ADDRESS`, `SLACKHOOKS_APPSERVICE_URL`,
 `SLACKHOOKS_WEBHOOK_ADDRESS`, `SLACKHOOKS_PUBLIC_BASE_URL`, `SLACKHOOKS_DB`,
@@ -129,9 +130,9 @@ docker compose -f dev/docker-compose.yaml exec synapse \
     register_new_matrix_user -c /data/homeserver.yaml http://localhost:8008
 ```
 
-For the remaining steps use a dev config (a copy of `config.yaml`) with
-`server_name: localhost` and `homeserver_url: http://localhost:8008` (the
-compose defaults), and with
+For the remaining steps use a dev `config.yaml` (a copy of
+`config.yaml.example`) with `server_name: localhost` and
+`homeserver_url: http://localhost:8008` (the compose defaults), and with
 
 ```yaml
 appservice_url: http://host.docker.internal:29329

@@ -34,6 +34,7 @@ go.work.sum
 
 # Build output
 /slackhooks
+/slackhooks-*
 
 # Local state
 *.db
@@ -41,3 +42,7 @@ go.work.sum
 dev/synapse/
 registration.yaml
 
+# Local configs (config.yaml.example is the tracked template)
+config.yaml
+config.yaml.*
+!config.yaml.example
