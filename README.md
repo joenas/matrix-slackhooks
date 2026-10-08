@@ -214,8 +214,10 @@ If you already run slackhooks outside Docker:
   contents of the two Swarm secrets. Generating new tokens instead also
   means replacing the registration file on Synapse.
 - Update the `url` in Synapse's existing registration file to the in-Swarm
-  appservice address (`http://slackhooks_slackhooks:29329`), make sure
-  Synapse is attached to the `matrix` overlay network, and restart Synapse.
+  appservice address (`http://slackhooks:29329`, the network alias from the
+  stack file), make sure Synapse is attached to the `matrix` overlay network,
+  and restart Synapse. Don't use the Swarm service name
+  `slackhooks_slackhooks`: Synapse rejects hostnames containing `_`.
 - Copy the existing `slackhooks.db` into the stack's data volume before the
   first start, owned by `10001:10001`. `docker stack deploy` prefixes volume
   names with the stack name, so with the stack named `slackhooks` the volume

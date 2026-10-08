@@ -11,7 +11,7 @@
 #   docker run --rm \
 #     -e SLACKHOOKS_SERVER_NAME=example.com \
 #     -e SLACKHOOKS_HOMESERVER_URL=https://matrix.example.com \
-#     -e SLACKHOOKS_APPSERVICE_URL=http://slackhooks_slackhooks:29329 \
+#     -e SLACKHOOKS_APPSERVICE_URL=http://slackhooks:29329 \
 #     "$SLACKHOOKS_IMAGE" generate-registration
 #
 # That prints the registration YAML and two random tokens. Save the
@@ -38,9 +38,10 @@ services:
     environment:
       SLACKHOOKS_HOMESERVER_URL: "https://matrix.example.com"
       SLACKHOOKS_SERVER_NAME: "example.com"
-      # How Synapse reaches this service on the shared overlay network.
-      # Swarm prefixes the service name with the stack name.
-      SLACKHOOKS_APPSERVICE_URL: "http://slackhooks_slackhooks:29329"
+      # How Synapse reaches this service on the shared overlay network, via
+      # the "slackhooks" alias below. Don't use the Swarm service name
+      # (slackhooks_slackhooks): Synapse rejects hostnames containing "_".
+      SLACKHOOKS_APPSERVICE_URL: "http://slackhooks:29329"
       # Tokens via Swarm secrets, mounted as files (never in `docker inspect`).
       SLACKHOOKS_AS_TOKEN_FILE: /run/secrets/slackhooks_as_token
       SLACKHOOKS_HS_TOKEN_FILE: /run/secrets/slackhooks_hs_token
@@ -66,7 +67,10 @@ services:
         protocol: tcp
         mode: ingress
     networks:
-      - matrix
+      matrix:
+        # Underscore-free hostname for Synapse (see SLACKHOOKS_APPSERVICE_URL).
+        aliases:
+          - slackhooks
     deploy:
       mode: replicated
       replicas: 1
