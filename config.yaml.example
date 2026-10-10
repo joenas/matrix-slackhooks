@@ -46,5 +46,23 @@ user_prefix: _slackhook_
 #   - "#team:example.com"
 #   - "!abcdef:example.com"
 
+# Matrix user IDs or patterns that may run bot commands in any room the bot
+# is in, and may invite the bot to any room. A "*" in place of the localpart
+# (e.g. "@*:example.com") matches every user on that server. On a homeserver
+# with open registration, such a pattern gives admin rights to anyone who can
+# register an account there — prefer listing explicit user IDs unless
+# registration is closed. Env override: SLACKHOOKS_ADMINS (comma-separated).
+# admins:
+#   - "@alice:example.com"
+#   - "@*:example.com"
+
+# Minimum power level required in the room for non-admins to run bot commands.
+# Set above 100 (e.g. 101) to make commands admins-only.
+# Env override: SLACKHOOKS_COMMAND_POWER_LEVEL
+command_power_level: 50
+
+# Prefix for bot commands in chat. Env override: SLACKHOOKS_COMMAND_PREFIX
+command_prefix: "!hook"
+
 # Event type used for messages: m.text or m.notice.
 default_msgtype: m.text

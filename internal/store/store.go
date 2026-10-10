@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
 
@@ -26,6 +29,7 @@ type DB struct {
 // reorder or edit an existing one.
 var migrations = []func(tx *sql.Tx) error{
 	migrateV1,
+	migrateV2,
 }
 
 // migrationV1SQL is the initial schema, matching the one-off schema the
@@ -62,6 +66,20 @@ CREATE TABLE IF NOT EXISTS avatars (
 
 func migrateV1(tx *sql.Tx) error {
 	_, err := tx.Exec(migrationV1SQL)
+	return err
+}
+
+// migrationV2SQL adds the dms table used to remember per-user DM rooms for
+// delivering webhook URLs.
+const migrationV2SQL = `
+CREATE TABLE IF NOT EXISTS dms (
+    user_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL
+);
+`
+
+func migrateV2(tx *sql.Tx) error {
+	_, err := tx.Exec(migrationV2SQL)
 	return err
 }
 
@@ -356,4 +374,63 @@ func (d *DB) SetMembership(userID id.UserID, roomID id.RoomID, membership string
 func (d *DB) DeleteMembership(userID id.UserID, roomID id.RoomID) error {
 	_, err := d.db.Exec(`DELETE FROM memberships WHERE user_id = ? AND room_id = ?`, userID.String(), roomID.String())
 	return err
+}
+
+// GetDM returns the stored DM room ID for the user, or "" if none is stored.
+func (d *DB) GetDM(userID id.UserID) (id.RoomID, error) {
+	var roomID string
+	err := d.db.QueryRow(`SELECT room_id FROM dms WHERE user_id = ?`, userID.String()).Scan(&roomID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	} else if err != nil {
+		return "", err
+	}
+	return id.RoomID(roomID), nil
+}
+
+// SetDM stores or updates the DM room ID for the user.
+func (d *DB) SetDM(userID id.UserID, roomID id.RoomID) error {
+	_, err := d.db.Exec(`
+		INSERT INTO dms (user_id, room_id) VALUES (?, ?)
+		ON CONFLICT (user_id) DO UPDATE SET room_id = excluded.room_id`,
+		userID.String(), roomID.String())
+	return err
+}
+
+// IsDMRoom reports whether roomID is a stored DM room for any user. Bot
+// commands are ignored in DM rooms to prevent hooks from being created in
+// them.
+func (d *DB) IsDMRoom(roomID id.RoomID) (bool, error) {
+	var dummy int
+	err := d.db.QueryRow(`SELECT 1 FROM dms WHERE room_id = ? LIMIT 1`, roomID.String()).Scan(&dummy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// MaxLabelLen is the maximum number of runes allowed in a hook label.
+const MaxLabelLen = 32
+
+// NormalizeLabel trims surrounding whitespace from label and validates it.
+// It rejects labels containing control characters (newlines, tabs, etc.) or
+// exceeding MaxLabelLen runes. An empty label is allowed. The trimmed label
+// is returned.
+func NormalizeLabel(label string) (string, error) {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return "", nil
+	}
+	if utf8.RuneCountInString(label) > MaxLabelLen {
+		return "", fmt.Errorf("label is too long (max %d characters)", MaxLabelLen)
+	}
+	for _, r := range label {
+		if unicode.IsControl(r) {
+			return "", fmt.Errorf("label must not contain control characters")
+		}
+	}
+	return label, nil
 }

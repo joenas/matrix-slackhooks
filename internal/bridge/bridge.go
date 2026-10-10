@@ -84,15 +84,38 @@ func newAvatarClient() *http.Client {
 	}
 }
 
+// blockedPrefixes are additional IP ranges that avatar downloads must never
+// reach, beyond the standard predicates (loopback, private, link-local, etc.).
+// These are ranges not covered by netip.Addr.IsPrivate: 0.0.0.0/8 (this
+// network), 100.64.0.0/10 (CGNAT/Tailscale), 192.0.0.0/24 (IETF protocol
+// assignments), 198.18.0.0/15 (benchmark testing) and 64:ff9b::/96 (NAT64,
+// which can map to internal IPv4).
+var blockedPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+}
+
 // isLocalIP reports whether an IP address is one that avatar downloads must
 // never reach: loopback, unspecified, private, link-local or multicast
-// (including the IPv4-in-IPv6 forms).
+// (including the IPv4-in-IPv6 forms), plus the explicitly blocked ranges
+// listed in blockedPrefixes.
 func isLocalIP(ip netip.Addr) bool {
 	if ip.Is4In6() {
 		ip = ip.Unmap()
 	}
-	return ip.IsLoopback() || ip.IsUnspecified() || ip.IsPrivate() ||
-		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast()
+	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
+		return true
+	}
+	for _, prefix := range blockedPrefixes {
+		if prefix.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *Bridge) QueryAlias(alias id.RoomAlias) bool {
@@ -341,8 +364,9 @@ func (b *Bridge) HandleRoomMember(ctx context.Context, evt *event.Event) {
 
 // handleBotInvite joins the bot to allowed rooms and rejects invites to
 // everything else, so the bot can only end up in rooms it is meant to serve.
+// An admin may invite the bot to any room.
 func (b *Bridge) handleBotInvite(ctx context.Context, evt *event.Event) {
-	allowed, err := b.roomAllowedFor(ctx, evt.RoomID)
+	allowed, err := b.inviteAllowedFor(ctx, evt.RoomID, evt.Sender)
 	if err != nil {
 		b.Log.Warn().Err(err).Str("room_id", evt.RoomID.String()).
 			Msg("Failed to evaluate room allowlist; not joining")
@@ -360,6 +384,23 @@ func (b *Bridge) handleBotInvite(ctx context.Context, evt *event.Event) {
 		&mautrix.ReqLeave{Reason: "This room is not allowed for slackhooks"}); err != nil {
 		b.Log.Warn().Err(err).Str("room_id", evt.RoomID.String()).Msg("Failed to reject invite as bot")
 	}
+}
+
+// inviteAllowedFor reports whether the bot may join roomID on invite from
+// inviter: the room is allowed (has a hook or is in allowed_rooms), or the
+// inviter is an admin.
+func (b *Bridge) inviteAllowedFor(ctx context.Context, roomID id.RoomID, inviter id.UserID) (bool, error) {
+	roomOk, err := b.roomAllowedFor(ctx, roomID)
+	if err != nil {
+		return false, err
+	}
+	return botInviteAllowed(roomOk, inviter, b.Cfg.IsAdmin), nil
+}
+
+// botInviteAllowed is the pure invite decision: the room is allowed, or the
+// inviter is an admin. It performs no Matrix or database calls.
+func botInviteAllowed(roomAllowed bool, inviter id.UserID, isAdmin func(id.UserID) bool) bool {
+	return roomAllowed || isAdmin(inviter)
 }
 
 // roomAllowedFor reports whether the bot may join roomID: it has a webhook, or
@@ -430,14 +471,4 @@ func (b *Bridge) WarnDisallowedJoinedRooms(ctx context.Context) {
 				Msg("Bot is joined to a room that is not allowed (no webhook, not in allowed_rooms)")
 		}
 	}
-}
-
-// HandleBotMessage ignores messages sent to the bot. Management is done
-// entirely through the CLI; bot commands are intentionally not supported.
-func (b *Bridge) HandleBotMessage(ctx context.Context, evt *event.Event) {
-	if evt.Sender == b.AS.BotMXID() {
-		return
-	}
-	b.Log.Debug().Str("sender", evt.Sender.String()).Str("room_id", evt.RoomID.String()).
-		Msg("Ignoring message to bot (management is done with the CLI; bot commands are not supported)")
 }

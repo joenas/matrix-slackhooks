@@ -391,3 +391,155 @@ func TestBackup(t *testing.T) {
 		t.Error("backing up over an existing file should error")
 	}
 }
+
+func TestMigrationV2CreatesDMsTable(t *testing.T) {
+	path := t.TempDir() + "/v1.db"
+	// Create a v1 database (user_version 1) with a hook.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = raw.Exec(migrationV1SQL); err != nil {
+		t.Fatalf("create v1 schema: %v", err)
+	}
+	if _, err = raw.Exec(`INSERT INTO hooks (token, room_id, label, created_by, created_at) VALUES (?, ?, ?, ?, ?)`,
+		"tok123", "!room:example.com", "label", "me", int64(1000)); err != nil {
+		t.Fatalf("insert hook: %v", err)
+	}
+	if _, err = raw.Exec(`PRAGMA user_version = 1`); err != nil {
+		t.Fatalf("set user_version: %v", err)
+	}
+	if err = raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open v1 db: %v", err)
+	}
+	defer db.Close()
+
+	if got := userVersion(t, db); got != len(migrations) {
+		t.Errorf("user_version = %d, want %d", got, len(migrations))
+	}
+
+	// Existing hooks are intact.
+	hook, err := db.GetHook("tok123")
+	if err != nil || hook == nil {
+		t.Fatalf("hook lost during v2 migration: %v, %v", hook, err)
+	}
+	if hook.Label != "label" {
+		t.Errorf("hook label = %q, want %q", hook.Label, "label")
+	}
+
+	// The dms table exists and is usable.
+	roomID, err := db.GetDM(id.UserID("@alice:example.com"))
+	if err != nil {
+		t.Fatalf("GetDM on empty dms table: %v", err)
+	}
+	if roomID != "" {
+		t.Errorf("GetDM on empty table = %q, want empty", roomID)
+	}
+	if err = db.SetDM(id.UserID("@alice:example.com"), id.RoomID("!dm:example.com")); err != nil {
+		t.Fatalf("SetDM: %v", err)
+	}
+	roomID, err = db.GetDM(id.UserID("@alice:example.com"))
+	if err != nil {
+		t.Fatalf("GetDM after SetDM: %v", err)
+	}
+	if roomID != "!dm:example.com" {
+		t.Errorf("GetDM = %q, want %q", roomID, "!dm:example.com")
+	}
+}
+
+func TestDMStore(t *testing.T) {
+	db := openTestDB(t)
+	user := id.UserID("@bob:example.com")
+	room := id.RoomID("!dmroom:example.com")
+
+	// No DM stored.
+	got, err := db.GetDM(user)
+	if err != nil {
+		t.Fatalf("GetDM: %v", err)
+	}
+	if got != "" {
+		t.Errorf("GetDM = %q, want empty", got)
+	}
+
+	// Store one.
+	if err = db.SetDM(user, room); err != nil {
+		t.Fatalf("SetDM: %v", err)
+	}
+	got, err = db.GetDM(user)
+	if err != nil {
+		t.Fatalf("GetDM after SetDM: %v", err)
+	}
+	if got != room {
+		t.Errorf("GetDM = %q, want %q", got, room)
+	}
+
+	// Update it.
+	newRoom := id.RoomID("!newdm:example.com")
+	if err = db.SetDM(user, newRoom); err != nil {
+		t.Fatalf("SetDM update: %v", err)
+	}
+	got, err = db.GetDM(user)
+	if err != nil {
+		t.Fatalf("GetDM after update: %v", err)
+	}
+	if got != newRoom {
+		t.Errorf("GetDM = %q, want %q", got, newRoom)
+	}
+}
+
+func TestIsDMRoom(t *testing.T) {
+	db := openTestDB(t)
+	dmRoom := id.RoomID("!dm:example.com")
+	otherRoom := id.RoomID("!other:example.com")
+
+	// No DM stored yet.
+	isDM, err := db.IsDMRoom(dmRoom)
+	if err != nil {
+		t.Fatalf("IsDMRoom: %v", err)
+	}
+	if isDM {
+		t.Error("IsDMRoom should be false before any DM is stored")
+	}
+
+	// Store a DM.
+	if err = db.SetDM(id.UserID("@alice:example.com"), dmRoom); err != nil {
+		t.Fatalf("SetDM: %v", err)
+	}
+
+	// The stored DM room is recognised.
+	isDM, err = db.IsDMRoom(dmRoom)
+	if err != nil {
+		t.Fatalf("IsDMRoom: %v", err)
+	}
+	if !isDM {
+		t.Error("IsDMRoom should be true for a stored DM room")
+	}
+
+	// A non-DM room is not recognised.
+	isDM, err = db.IsDMRoom(otherRoom)
+	if err != nil {
+		t.Fatalf("IsDMRoom: %v", err)
+	}
+	if isDM {
+		t.Error("IsDMRoom should be false for a non-DM room")
+	}
+}
+
+func TestNormalizeLabel(t *testing.T) {
+	// Basic coverage at the store package level; comprehensive table test
+	// is in internal/bridge.
+	if got, err := NormalizeLabel("  grafana  "); err != nil || got != "grafana" {
+		t.Errorf("NormalizeLabel(trim) = %q, %v, want grafana", got, err)
+	}
+	if _, err := NormalizeLabel("abcdefghijklmnopqrstuvwxyz0123456"); err == nil {
+		t.Error("NormalizeLabel should reject 33 chars")
+	}
+	if _, err := NormalizeLabel("line1\nline2"); err == nil {
+		t.Error("NormalizeLabel should reject newlines")
+	}
+}

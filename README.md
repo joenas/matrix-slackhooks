@@ -39,7 +39,9 @@ overridden with an environment variable:
 `SLACKHOOKS_WEBHOOK_ADDRESS`, `SLACKHOOKS_PUBLIC_BASE_URL`, `SLACKHOOKS_DB`,
 `SLACKHOOKS_BOT_LOCALPART`, `SLACKHOOKS_BOT_DISPLAYNAME`,
 `SLACKHOOKS_USER_PREFIX`, `SLACKHOOKS_DEFAULT_MSGTYPE`,
-`SLACKHOOKS_ALLOWED_ROOMS` (comma-separated list of room IDs/aliases).
+`SLACKHOOKS_ALLOWED_ROOMS` (comma-separated list of room IDs/aliases),
+`SLACKHOOKS_ADMINS` (comma-separated list of user IDs/patterns),
+`SLACKHOOKS_COMMAND_POWER_LEVEL`, `SLACKHOOKS_COMMAND_PREFIX`.
 `SLACKHOOKS_AS_TOKEN_FILE` / `SLACKHOOKS_HS_TOKEN_FILE` read the tokens from
 the named files (Docker/Swarm secrets) and take precedence over the plain
 `SLACKHOOKS_AS_TOKEN` / `SLACKHOOKS_HS_TOKEN` env vars.
@@ -70,25 +72,50 @@ separate address.
 
 ## Managing webhooks
 
-Webhooks are managed from the command line against the SQLite database. The
-CLI can run while the service is running (the database is in WAL mode with a
-busy timeout, so concurrent access is safe — handy with
-`docker exec … slackhooks add-hook`):
+Webhooks are managed from the command line against the SQLite database, or
+from inside Matrix via bot commands. The CLI can run while the service is
+running (the database is in WAL mode with a busy timeout, so concurrent access
+is safe — handy with `docker exec … slackhooks add-hook`):
 
 ```
 slackhooks -config config.yaml add-hook -label "CI" '!roomid:localhost'
 slackhooks -config config.yaml add-hook '#my-room:localhost'   # aliases are resolved too
 slackhooks -config config.yaml list-hooks                       # all webhooks
 slackhooks -config config.yaml list-hooks '!roomid:localhost'   # just one room
-slackhooks -config config.yaml remove-hook abc12345             # by token or unique prefix
+slackhooks -config config.yaml remove-hook abc12345             # by token or unique prefix (min 4 chars)
 slackhooks -config config.yaml backup slackhooks-2026.db        # safe snapshot while running
 ```
 
 `add-hook` takes a room ID (`!localpart:server`) or an alias
-(`#localpart:server`, resolved through the homeserver when tokens are set). It
-prints a URL like `https://hooks.example.com/hooks/<token>` and a reminder to
-invite the bot. `remove-hook` needs the full token or a prefix that matches
-exactly one webhook; on ambiguity it lists the candidates.
+(`#localpart:server`, resolved through the homeserver when tokens are set). The
+optional `-label` (max 32 characters, no newlines or control characters) is used
+as the puppet display name fallback. It prints a URL like
+`https://hooks.example.com/hooks/<token>` and a reminder to invite the bot.
+`remove-hook` needs the full token or a prefix at least 4 characters that
+matches exactly one webhook; on ambiguity it lists the candidates.
+
+### Bot commands
+
+In any room the bot is in, use `!hook help` to list commands. The prefix
+(`!hook` by default) is configurable via `command_prefix` or
+`SLACKHOOKS_COMMAND_PREFIX`.
+
+| Command | Description |
+|---|---|
+| `!hook new [label]` | Create a hook for this room. The full URL is sent to you by direct message. In the room, only the label and token prefix are shown. The label is max 32 characters, must not contain newlines or other control characters, and is used as the puppet display name fallback. |
+| `!hook list` | List hooks in this room: label, 8-character token prefix, creator and creation date. |
+| `!hook remove <label\|token-prefix>` | Remove a hook by exact label (case-insensitive) or token prefix (min 4 chars). Ambiguous matches are listed without deleting. |
+| `!hook help` | Show this help. |
+
+**Permissions:**
+
+- **Admins** (listed in `admins` config / `SLACKHOOKS_ADMINS`) may run commands
+  in any room the bot is in, and may invite the bot to any room (including rooms
+  without a hook that are not in `allowed_rooms`). The `@*:example.com` pattern
+  matches every user on that server.
+- **Non-admins** need a power level at or above `command_power_level` (default
+  `50`) in the room. Setting `command_power_level: 101` effectively means
+  "admins only", because no normal user can reach that level.
 
 ## Room access control
 
@@ -251,6 +278,35 @@ docker exec $(docker ps -qf name=<stack>_slackhooks) slackhooks backup /data/bac
 No `-config` flag needed: `SLACKHOOKS_CONFIG` and the DB path come from the
 image environment. Back up with `slackhooks backup` (a consistent snapshot via
 `VACUUM INTO`), not `cp` of the live database, which would miss the WAL file.
+
+## Security
+
+- **Hook URLs are bearer secrets.** Anyone who knows the URL can post messages
+  to the room. `!hook list` in chat shows only an 8-character token prefix;
+  the CLI `list-hooks` shows full URLs, but only on the operator's terminal.
+  Full URLs reach chat only by DM, never posted in a room. Token logs are
+  truncated to 6 characters.
+- **Command permissions.** By default users need power level 50 or above to run
+  bot commands. Set `command_power_level: 101` to restrict commands to admins
+  only. Admins are configured in the `admins` config option; they can run
+  commands in any room and invite the bot anywhere.
+- **Server-wide admin patterns.** An `@*:example.com` admin entry matches every
+  user on that server. On a homeserver with open registration, that means
+  anyone who can register an account there gets admin rights — inviting the
+  bot to any room and managing hooks in every room the bot is in. Prefer
+  listing explicit user IDs unless registration is closed.
+- **Encrypted rooms.** The bot does not support E2EE. Messages sent to the bot
+  via bot commands in encrypted rooms are not seen by the bot, so "new",
+  "list", "remove" won't work there. If the homeserver sets
+  `encryption_enabled_by_default_for_room_type` (Synapse), DMs created by the
+  bot start out encrypted. The bot then treats each one as unusable and
+  creates a new DM on every `!hook new`. Disable that setting for the bot, or
+  keep it off.
+- **SSRF guard for avatar downloads.** The avatar download client refuses
+  connections to loopback, private, link-local, multicast, unspecified,
+  CGNAT (`100.64.0.0/10`), `0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15` and
+  NAT64 (`64:ff9b::/96`) addresses, including IPv4-in-IPv6 forms and
+  redirect targets.
 
 ## Development
 

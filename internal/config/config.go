@@ -3,38 +3,45 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 )
 
 type Config struct {
-	HomeserverURL  string   `yaml:"homeserver_url"`
-	ServerName     string   `yaml:"server_name"`
-	ASToken        string   `yaml:"as_token"`
-	HSToken        string   `yaml:"hs_token"`
-	ASAddress      string   `yaml:"as_address"`
-	AppserviceURL  string   `yaml:"appservice_url"`
-	WebhookAddress string   `yaml:"webhook_address"`
-	PublicBaseURL  string   `yaml:"public_base_url"`
-	DBPath         string   `yaml:"db"`
-	BotLocalpart   string   `yaml:"bot_localpart"`
-	BotDisplayName string   `yaml:"bot_displayname"`
-	UserPrefix     string   `yaml:"user_prefix"`
-	DefaultMsgtype string   `yaml:"default_msgtype"`
-	AllowedRooms   []string `yaml:"allowed_rooms"`
+	HomeserverURL     string   `yaml:"homeserver_url"`
+	ServerName        string   `yaml:"server_name"`
+	ASToken           string   `yaml:"as_token"`
+	HSToken           string   `yaml:"hs_token"`
+	ASAddress         string   `yaml:"as_address"`
+	AppserviceURL     string   `yaml:"appservice_url"`
+	WebhookAddress    string   `yaml:"webhook_address"`
+	PublicBaseURL     string   `yaml:"public_base_url"`
+	DBPath            string   `yaml:"db"`
+	BotLocalpart      string   `yaml:"bot_localpart"`
+	BotDisplayName    string   `yaml:"bot_displayname"`
+	UserPrefix        string   `yaml:"user_prefix"`
+	DefaultMsgtype    string   `yaml:"default_msgtype"`
+	AllowedRooms      []string `yaml:"allowed_rooms"`
+	Admins            []string `yaml:"admins"`
+	CommandPowerLevel int      `yaml:"command_power_level"`
+	CommandPrefix     string   `yaml:"command_prefix"`
 }
 
 func Default() *Config {
 	return &Config{
-		ASAddress:      "0.0.0.0:29329",
-		DBPath:         "slackhooks.db",
-		BotLocalpart:   "slackhooks",
-		BotDisplayName: "Slack Hook",
-		UserPrefix:     "_slackhook_",
-		DefaultMsgtype: "m.text",
+		ASAddress:         "0.0.0.0:29329",
+		DBPath:            "slackhooks.db",
+		BotLocalpart:      "slackhooks",
+		BotDisplayName:    "Slack Hook",
+		UserPrefix:        "_slackhook_",
+		DefaultMsgtype:    "m.text",
+		CommandPowerLevel: 50,
+		CommandPrefix:     "!hook",
 	}
 }
 
@@ -58,14 +65,16 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("parse config file %s: %w", path, err)
 		}
 	}
-	cfg.applyEnv()
+	if err := cfg.applyEnv(); err != nil {
+		return nil, err
+	}
 	if err := cfg.applyEnvTokenFiles(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
 }
 
-func (c *Config) applyEnv() {
+func (c *Config) applyEnv() error {
 	overrides := []struct {
 		key    string
 		target *string
@@ -83,11 +92,20 @@ func (c *Config) applyEnv() {
 		{"SLACKHOOKS_BOT_DISPLAYNAME", &c.BotDisplayName},
 		{"SLACKHOOKS_USER_PREFIX", &c.UserPrefix},
 		{"SLACKHOOKS_DEFAULT_MSGTYPE", &c.DefaultMsgtype},
+		{"SLACKHOOKS_COMMAND_PREFIX", &c.CommandPrefix},
 	}
 	for _, o := range overrides {
 		if val, ok := os.LookupEnv(o.key); ok && val != "" {
 			*o.target = val
 		}
+	}
+	// CommandPowerLevel is an int, so it gets a dedicated override.
+	if val, ok := os.LookupEnv("SLACKHOOKS_COMMAND_POWER_LEVEL"); ok && val != "" {
+		n, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("SLACKHOOKS_COMMAND_POWER_LEVEL: invalid integer %q: %w", val, err)
+		}
+		c.CommandPowerLevel = n
 	}
 	// allowed_rooms is a list, so it gets a dedicated comma-separated override.
 	if val, ok := os.LookupEnv("SLACKHOOKS_ALLOWED_ROOMS"); ok {
@@ -99,6 +117,17 @@ func (c *Config) applyEnv() {
 		}
 		c.AllowedRooms = rooms
 	}
+	// admins is a list, so it gets a dedicated comma-separated override.
+	if val, ok := os.LookupEnv("SLACKHOOKS_ADMINS"); ok {
+		var admins []string
+		for _, a := range strings.Split(val, ",") {
+			if a = strings.TrimSpace(a); a != "" {
+				admins = append(admins, a)
+			}
+		}
+		c.Admins = admins
+	}
+	return nil
 }
 
 // applyEnvTokenFiles loads secrets from files (Docker/Swarm secrets). The
@@ -173,4 +202,27 @@ func (c *Config) WebhookBaseURL() string {
 		base = "http://" + c.ASAddress
 	}
 	return base
+}
+
+// IsAdmin reports whether userID is an admin. An admin entry is an exact user
+// ID or a pattern "@*:server" where * matches the whole localpart. This is a
+// pure function with no Matrix or database calls.
+func (c *Config) IsAdmin(userID id.UserID) bool {
+	for _, entry := range c.Admins {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if entry == userID.String() {
+			return true
+		}
+		if strings.HasPrefix(entry, "@*:") {
+			server := entry[3:]
+			_, userServer, err := userID.Parse()
+			if err == nil && userServer == server {
+				return true
+			}
+		}
+	}
+	return false
 }
