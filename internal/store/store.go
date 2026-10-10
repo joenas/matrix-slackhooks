@@ -26,6 +26,7 @@ type DB struct {
 // reorder or edit an existing one.
 var migrations = []func(tx *sql.Tx) error{
 	migrateV1,
+	migrateV2,
 }
 
 // migrationV1SQL is the initial schema, matching the one-off schema the
@@ -62,6 +63,20 @@ CREATE TABLE IF NOT EXISTS avatars (
 
 func migrateV1(tx *sql.Tx) error {
 	_, err := tx.Exec(migrationV1SQL)
+	return err
+}
+
+// migrationV2SQL adds the dms table used to remember per-user DM rooms for
+// delivering webhook URLs.
+const migrationV2SQL = `
+CREATE TABLE IF NOT EXISTS dms (
+    user_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL
+);
+`
+
+func migrateV2(tx *sql.Tx) error {
+	_, err := tx.Exec(migrationV2SQL)
 	return err
 }
 
@@ -355,5 +370,26 @@ func (d *DB) SetMembership(userID id.UserID, roomID id.RoomID, membership string
 
 func (d *DB) DeleteMembership(userID id.UserID, roomID id.RoomID) error {
 	_, err := d.db.Exec(`DELETE FROM memberships WHERE user_id = ? AND room_id = ?`, userID.String(), roomID.String())
+	return err
+}
+
+// GetDM returns the stored DM room ID for the user, or "" if none is stored.
+func (d *DB) GetDM(userID id.UserID) (id.RoomID, error) {
+	var roomID string
+	err := d.db.QueryRow(`SELECT room_id FROM dms WHERE user_id = ?`, userID.String()).Scan(&roomID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	} else if err != nil {
+		return "", err
+	}
+	return id.RoomID(roomID), nil
+}
+
+// SetDM stores or updates the DM room ID for the user.
+func (d *DB) SetDM(userID id.UserID, roomID id.RoomID) error {
+	_, err := d.db.Exec(`
+		INSERT INTO dms (user_id, room_id) VALUES (?, ?)
+		ON CONFLICT (user_id) DO UPDATE SET room_id = excluded.room_id`,
+		userID.String(), roomID.String())
 	return err
 }

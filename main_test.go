@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/joenas/matrix-slackhooks/internal/bridge"
 	"github.com/joenas/matrix-slackhooks/internal/config"
 )
 
@@ -151,5 +152,11 @@ func TestUserNamespaceRegexesQuoted(t *testing.T) {
 	}
 	if !regexp.MustCompile(botRaw).MatchString("@bot.name:ex ample.com") {
 		t.Errorf("bot regex %q should match the bot user with meta characters", botRaw)
+	}
+}
+
+func TestRemoveHookMinPrefix(t *testing.T) {
+	if got := bridge.MinRemovePrefix; got < 4 {
+		t.Errorf("MinRemovePrefix = %d, want at least 4", got)
 	}
 }
