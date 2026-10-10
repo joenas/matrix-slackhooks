@@ -240,48 +240,152 @@ func TestMatchHooksForRemoval(t *testing.T) {
 	}
 }
 
-// ---------- Old-event cutoff and ignored edits ----------
+// ---------- Command candidate filter ----------
 
-func TestParseCommandIgnoresOldEvents(t *testing.T) {
-	// The maxCommandAge constant bounds how old an event can be. We test the
-	// age calculation directly: an event timestamp older than maxCommandAge
-	// should be treated as too old.
-	oldTS := time.Now().Add(-maxCommandAge - time.Minute).UnixMilli()
-	age := time.Since(time.UnixMilli(oldTS))
-	if age <= maxCommandAge {
-		t.Errorf("age %v should exceed maxCommandAge %v", age, maxCommandAge)
+func TestCommandCandidate(t *testing.T) {
+	botID := id.UserID("@slackhooks-bot:example.com")
+	puppet := func(uid id.UserID) bool {
+		return uid == id.UserID("@_slackhook_builder:example.com")
+	}
+	dmRoom := id.RoomID("!dm:example.com")
+	isDMRoom := func(rid id.RoomID) bool { return rid == dmRoom }
+	now := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	validBase := &event.Event{
+		Sender:    id.UserID("@alice:example.com"),
+		RoomID:    id.RoomID("!room:example.com"),
+		Timestamp: now.UnixMilli(),
+		Content:   event.Content{Parsed: &event.MessageEventContent{MsgType: event.MsgText, Body: "!hook list"}},
 	}
 
-	// A fresh event is within the cutoff.
-	freshTS := time.Now().UnixMilli()
-	age = time.Since(time.UnixMilli(freshTS))
-	if age > maxCommandAge {
-		t.Errorf("fresh event age %v should not exceed maxCommandAge %v", age, maxCommandAge)
+	tests := []struct {
+		name  string
+		mod   func(*event.Event)
+		allow bool
+	}{
+		{
+			name:  "valid command event passes",
+			mod:   func(_ *event.Event) {},
+			allow: true,
+		},
+		{
+			name: "bot's own message is ignored",
+			mod: func(e *event.Event) {
+				e.Sender = botID
+			},
+			allow: false,
+		},
+		{
+			name: "puppet message is ignored",
+			mod: func(e *event.Event) {
+				e.Sender = id.UserID("@_slackhook_builder:example.com")
+			},
+			allow: false,
+		},
+		{
+			name: "non-MessageEventContent is ignored",
+			mod: func(e *event.Event) {
+				e.Content = event.Content{Parsed: nil}
+			},
+			allow: false,
+		},
+		{
+			name: "non-m.text message type is ignored",
+			mod: func(e *event.Event) {
+				e.Content = event.Content{Parsed: &event.MessageEventContent{MsgType: event.MsgNotice, Body: "!hook list"}}
+			},
+			allow: false,
+		},
+		{
+			name: "edit (m.replace) is ignored",
+			mod: func(e *event.Event) {
+				e.Content = event.Content{Parsed: &event.MessageEventContent{
+					MsgType:   event.MsgText,
+					Body:      "!hook list",
+					RelatesTo: &event.RelatesTo{Type: event.RelReplace},
+				}}
+			},
+			allow: false,
+		},
+		{
+			name: "event older than maxCommandAge is ignored",
+			mod: func(e *event.Event) {
+				e.Timestamp = now.Add(-maxCommandAge - time.Minute).UnixMilli()
+			},
+			allow: false,
+		},
+		{
+			name: "event just within maxCommandAge passes",
+			mod: func(e *event.Event) {
+				e.Timestamp = now.Add(-maxCommandAge + time.Second).UnixMilli()
+			},
+			allow: true,
+		},
+		{
+			name: "DM room is ignored",
+			mod: func(e *event.Event) {
+				e.RoomID = id.RoomID("!dm:example.com")
+			},
+			allow: false,
+		},
+		{
+			name: "non-DM room passes",
+			mod: func(e *event.Event) {
+				e.RoomID = id.RoomID("!other:example.com")
+			},
+			allow: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			evt := *validBase
+			tc.mod(&evt)
+			got := commandCandidate(&evt, botID, puppet, isDMRoom, now)
+			if got != tc.allow {
+				t.Errorf("commandCandidate = %v, want %v", got, tc.allow)
+			}
+		})
 	}
 }
 
-func TestEditIsDetected(t *testing.T) {
-	// An edit event has m.relates_to with rel_type m.replace.
-	msg := &event.MessageEventContent{
-		MsgType: event.MsgText,
-		Body:    "!hook list",
-		RelatesTo: &event.RelatesTo{
-			Type: event.RelReplace,
-		},
-	}
-	rel := msg.OptionalGetRelatesTo()
-	if rel == nil || rel.Type != event.RelReplace {
-		t.Fatal("should detect edit relation")
-	}
+// ---------- NormalizeLabel ----------
 
-	// A normal message has no edit relation.
-	normal := &event.MessageEventContent{
-		MsgType: event.MsgText,
-		Body:    "!hook list",
+func TestNormalizeLabel(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{"empty label", "", "", false},
+		{"simple label", "grafana", "grafana", false},
+		{"exactly 32 characters", "abcdefghijklmnopqrstuvwxyz012345", "abcdefghijklmnopqrstuvwxyz012345", false},
+		{"33 characters", "abcdefghijklmnopqrstuvwxyz0123456", "", true},
+		{"multibyte within limit", "日本語日本語日本語日本語", "日本語日本語日本語日本語", false},
+		{"multibyte exactly 32 runes", "日本語日本語日本語日本語日本語日本語日本語日本語日本語日本語日本", "日本語日本語日本語日本語日本語日本語日本語日本語日本語日本語日本", false},
+		{"multibyte 33 runes", "日本語日本語日本語日本語日本語日本語日本語日本語日本語日本語日本語", "", true},
+		{"surrounding whitespace trimmed", "  grafana  ", "grafana", false},
+		{"newline rejected", "line1\nline2", "", true},
+		{"tab rejected", "label\twith\ttab", "", true},
+		{"carriage return rejected", "label\rreturn", "", true},
 	}
-	rel = normal.OptionalGetRelatesTo()
-	if rel != nil && rel.Type == event.RelReplace {
-		t.Fatal("normal message should not be detected as edit")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := store.NormalizeLabel(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("NormalizeLabel(%q) = %q, want error", tc.input, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("NormalizeLabel(%q) unexpected error: %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Errorf("NormalizeLabel(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
 	}
 }
 

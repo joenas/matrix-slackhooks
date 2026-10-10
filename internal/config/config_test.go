@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"maunium.net/go/mautrix/id"
@@ -185,5 +186,25 @@ command_prefix: "!wh"
 	}
 	if cfg.CommandPrefix != "!wh" {
 		t.Errorf("CommandPrefix = %q, want !wh", cfg.CommandPrefix)
+	}
+}
+
+func TestInvalidCommandPowerLevelEnv(t *testing.T) {
+	t.Setenv("SLACKHOOKS_COMMAND_POWER_LEVEL", "not-an-int")
+	if _, err := Load(""); err == nil {
+		t.Fatal("expected an error for non-integer SLACKHOOKS_COMMAND_POWER_LEVEL")
+	} else if !strings.Contains(err.Error(), "SLACKHOOKS_COMMAND_POWER_LEVEL") {
+		t.Errorf("error should name the variable, got: %v", err)
+	}
+}
+
+func TestValidCommandPowerLevelEnv(t *testing.T) {
+	t.Setenv("SLACKHOOKS_COMMAND_POWER_LEVEL", "75")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CommandPowerLevel != 75 {
+		t.Errorf("CommandPowerLevel = %d, want 75", cfg.CommandPowerLevel)
 	}
 }

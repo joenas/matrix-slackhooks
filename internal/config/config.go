@@ -65,14 +65,16 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("parse config file %s: %w", path, err)
 		}
 	}
-	cfg.applyEnv()
+	if err := cfg.applyEnv(); err != nil {
+		return nil, err
+	}
 	if err := cfg.applyEnvTokenFiles(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
 }
 
-func (c *Config) applyEnv() {
+func (c *Config) applyEnv() error {
 	overrides := []struct {
 		key    string
 		target *string
@@ -99,9 +101,11 @@ func (c *Config) applyEnv() {
 	}
 	// CommandPowerLevel is an int, so it gets a dedicated override.
 	if val, ok := os.LookupEnv("SLACKHOOKS_COMMAND_POWER_LEVEL"); ok && val != "" {
-		if n, err := strconv.Atoi(val); err == nil {
-			c.CommandPowerLevel = n
+		n, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("SLACKHOOKS_COMMAND_POWER_LEVEL: invalid integer %q: %w", val, err)
 		}
+		c.CommandPowerLevel = n
 	}
 	// allowed_rooms is a list, so it gets a dedicated comma-separated override.
 	if val, ok := os.LookupEnv("SLACKHOOKS_ALLOWED_ROOMS"); ok {
@@ -123,6 +127,7 @@ func (c *Config) applyEnv() {
 		}
 		c.Admins = admins
 	}
+	return nil
 }
 
 // applyEnvTokenFiles loads secrets from files (Docker/Swarm secrets). The

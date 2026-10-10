@@ -48,8 +48,10 @@ user_prefix: _slackhook_
 
 # Matrix user IDs or patterns that may run bot commands in any room the bot
 # is in, and may invite the bot to any room. A "*" in place of the localpart
-# (e.g. "@*:example.com") matches every user on that server. Env override:
-# SLACKHOOKS_ADMINS (comma-separated).
+# (e.g. "@*:example.com") matches every user on that server. On a homeserver
+# with open registration, such a pattern gives admin rights to anyone who can
+# register an account there — prefer listing explicit user IDs unless
+# registration is closed. Env override: SLACKHOOKS_ADMINS (comma-separated).
 # admins:
 #   - "@alice:example.com"
 #   - "@*:example.com"

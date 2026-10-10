@@ -491,3 +491,55 @@ func TestDMStore(t *testing.T) {
 		t.Errorf("GetDM = %q, want %q", got, newRoom)
 	}
 }
+
+func TestIsDMRoom(t *testing.T) {
+	db := openTestDB(t)
+	dmRoom := id.RoomID("!dm:example.com")
+	otherRoom := id.RoomID("!other:example.com")
+
+	// No DM stored yet.
+	isDM, err := db.IsDMRoom(dmRoom)
+	if err != nil {
+		t.Fatalf("IsDMRoom: %v", err)
+	}
+	if isDM {
+		t.Error("IsDMRoom should be false before any DM is stored")
+	}
+
+	// Store a DM.
+	if err = db.SetDM(id.UserID("@alice:example.com"), dmRoom); err != nil {
+		t.Fatalf("SetDM: %v", err)
+	}
+
+	// The stored DM room is recognised.
+	isDM, err = db.IsDMRoom(dmRoom)
+	if err != nil {
+		t.Fatalf("IsDMRoom: %v", err)
+	}
+	if !isDM {
+		t.Error("IsDMRoom should be true for a stored DM room")
+	}
+
+	// A non-DM room is not recognised.
+	isDM, err = db.IsDMRoom(otherRoom)
+	if err != nil {
+		t.Fatalf("IsDMRoom: %v", err)
+	}
+	if isDM {
+		t.Error("IsDMRoom should be false for a non-DM room")
+	}
+}
+
+func TestNormalizeLabel(t *testing.T) {
+	// Basic coverage at the store package level; comprehensive table test
+	// is in internal/bridge.
+	if got, err := NormalizeLabel("  grafana  "); err != nil || got != "grafana" {
+		t.Errorf("NormalizeLabel(trim) = %q, %v, want grafana", got, err)
+	}
+	if _, err := NormalizeLabel("abcdefghijklmnopqrstuvwxyz0123456"); err == nil {
+		t.Error("NormalizeLabel should reject 33 chars")
+	}
+	if _, err := NormalizeLabel("line1\nline2"); err == nil {
+		t.Error("NormalizeLabel should reject newlines")
+	}
+}

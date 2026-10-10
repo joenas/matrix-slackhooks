@@ -87,11 +87,12 @@ slackhooks -config config.yaml backup slackhooks-2026.db        # safe snapshot 
 ```
 
 `add-hook` takes a room ID (`!localpart:server`) or an alias
-(`#localpart:server`, resolved through the homeserver when tokens are set). It
-prints a URL like `https://hooks.example.com/hooks/<token>` and a reminder to
-invite the bot. `remove-hook` needs the full token or a prefix at least 4
-characters that matches exactly one webhook; on ambiguity it lists the
-candidates.
+(`#localpart:server`, resolved through the homeserver when tokens are set). The
+optional `-label` (max 32 characters, no newlines or control characters) is used
+as the puppet display name fallback. It prints a URL like
+`https://hooks.example.com/hooks/<token>` and a reminder to invite the bot.
+`remove-hook` needs the full token or a prefix at least 4 characters that
+matches exactly one webhook; on ambiguity it lists the candidates.
 
 ### Bot commands
 
@@ -101,7 +102,7 @@ In any room the bot is in, use `!hook help` to list commands. The prefix
 
 | Command | Description |
 |---|---|
-| `!hook new [label]` | Create a hook for this room. The full URL is sent to you by direct message. In the room, only the label and token prefix are shown. |
+| `!hook new [label]` | Create a hook for this room. The full URL is sent to you by direct message. In the room, only the label and token prefix are shown. The label is max 32 characters, must not contain newlines or other control characters, and is used as the puppet display name fallback. |
 | `!hook list` | List hooks in this room: label, 8-character token prefix, creator and creation date. |
 | `!hook remove <label\|token-prefix>` | Remove a hook by exact label (case-insensitive) or token prefix (min 4 chars). Ambiguous matches are listed without deleting. |
 | `!hook help` | Show this help. |
@@ -281,17 +282,26 @@ image environment. Back up with `slackhooks backup` (a consistent snapshot via
 ## Security
 
 - **Hook URLs are bearer secrets.** Anyone who knows the URL can post messages
-  to the room. The bot only sends full URLs by DM, never in a room. The
-  `list-hooks` command and `!hook list` show only an 8-character token prefix;
-  the CLI shows the full URL but only on the terminal of the operator who ran
-  the command. Token logs are truncated to 6 characters.
+  to the room. `!hook list` in chat shows only an 8-character token prefix;
+  the CLI `list-hooks` shows full URLs, but only on the operator's terminal.
+  Full URLs reach chat only by DM, never posted in a room. Token logs are
+  truncated to 6 characters.
 - **Command permissions.** By default users need power level 50 or above to run
   bot commands. Set `command_power_level: 101` to restrict commands to admins
   only. Admins are configured in the `admins` config option; they can run
   commands in any room and invite the bot anywhere.
+- **Server-wide admin patterns.** An `@*:example.com` admin entry matches every
+  user on that server. On a homeserver with open registration, that means
+  anyone who can register an account there gets admin rights — inviting the
+  bot to any room and managing hooks in every room the bot is in. Prefer
+  listing explicit user IDs unless registration is closed.
 - **Encrypted rooms.** The bot does not support E2EE. Messages sent to the bot
   via bot commands in encrypted rooms are not seen by the bot, so "new",
-  "list", "remove" won't work there.
+  "list", "remove" won't work there. If the homeserver sets
+  `encryption_enabled_by_default_for_room_type` (Synapse), DMs created by the
+  bot start out encrypted. The bot then treats each one as unusable and
+  creates a new DM on every `!hook new`. Disable that setting for the bot, or
+  keep it off.
 - **SSRF guard for avatar downloads.** The avatar download client refuses
   connections to loopback, private, link-local, multicast, unspecified,
   CGNAT (`100.64.0.0/10`), `0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15` and

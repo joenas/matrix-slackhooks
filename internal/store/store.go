@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
 
@@ -392,4 +395,42 @@ func (d *DB) SetDM(userID id.UserID, roomID id.RoomID) error {
 		ON CONFLICT (user_id) DO UPDATE SET room_id = excluded.room_id`,
 		userID.String(), roomID.String())
 	return err
+}
+
+// IsDMRoom reports whether roomID is a stored DM room for any user. Bot
+// commands are ignored in DM rooms to prevent hooks from being created in
+// them.
+func (d *DB) IsDMRoom(roomID id.RoomID) (bool, error) {
+	var dummy int
+	err := d.db.QueryRow(`SELECT 1 FROM dms WHERE room_id = ? LIMIT 1`, roomID.String()).Scan(&dummy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// MaxLabelLen is the maximum number of runes allowed in a hook label.
+const MaxLabelLen = 32
+
+// NormalizeLabel trims surrounding whitespace from label and validates it.
+// It rejects labels containing control characters (newlines, tabs, etc.) or
+// exceeding MaxLabelLen runes. An empty label is allowed. The trimmed label
+// is returned.
+func NormalizeLabel(label string) (string, error) {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return "", nil
+	}
+	if utf8.RuneCountInString(label) > MaxLabelLen {
+		return "", fmt.Errorf("label is too long (max %d characters)", MaxLabelLen)
+	}
+	for _, r := range label {
+		if unicode.IsControl(r) {
+			return "", fmt.Errorf("label must not contain control characters")
+		}
+	}
+	return label, nil
 }

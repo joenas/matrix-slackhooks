@@ -224,6 +224,11 @@ func cmdAddHook(configPath string, args []string) {
 		log.Fatal().Err(err).Msg("Invalid room")
 	}
 
+	normalized, err := store.NormalizeLabel(*label)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Invalid label")
+	}
+
 	db, err := store.Open(cfg.DBPath)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to open database")
@@ -235,7 +240,7 @@ func cmdAddHook(configPath string, args []string) {
 		hook := &store.Hook{
 			Token:     store.NewToken(),
 			RoomID:    roomID,
-			Label:     *label,
+			Label:     normalized,
 			CreatedBy: *createdBy,
 			CreatedAt: time.Now(),
 		}

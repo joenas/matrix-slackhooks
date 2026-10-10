@@ -92,24 +92,12 @@ func tokenShortPrefix(token string) string {
 // HandleBotMessage processes m.room.message events addressed to the bot as
 // commands. Commands are prefixed with the configured command_prefix
 // (default "!hook"). Only m.text messages are handled; edits, old events,
-// the bot's own messages and puppet messages are ignored.
+// the bot's own messages, puppet messages and DM rooms are ignored.
 func (b *Bridge) HandleBotMessage(ctx context.Context, evt *event.Event) {
-	if evt.Sender == b.AS.BotMXID() {
+	if !b.isCommandCandidate(evt, time.Now()) {
 		return
 	}
-	if b.isPuppet(evt.Sender) {
-		return
-	}
-	msg, ok := evt.Content.Parsed.(*event.MessageEventContent)
-	if !ok || msg.MsgType != event.MsgText {
-		return
-	}
-	if rel := msg.OptionalGetRelatesTo(); rel != nil && rel.Type == event.RelReplace {
-		return
-	}
-	if age := time.Since(time.UnixMilli(evt.Timestamp)); age > maxCommandAge {
-		return
-	}
+	msg := evt.Content.Parsed.(*event.MessageEventContent)
 	cmd := parseCommand(msg.Body, b.Cfg.CommandPrefix)
 	if cmd == nil {
 		return
@@ -136,6 +124,49 @@ func (b *Bridge) HandleBotMessage(ctx context.Context, evt *event.Event) {
 	}
 }
 
+// isCommandCandidate reports whether evt should be considered as a bot
+// command. It rejects the bot's own messages, puppet messages, non-text
+// content, edits, events older than maxCommandAge, and DM rooms.
+func (b *Bridge) isCommandCandidate(evt *event.Event, now time.Time) bool {
+	isDMRoom := func(roomID id.RoomID) bool {
+		isDM, err := b.DB.IsDMRoom(roomID)
+		if err != nil {
+			b.Log.Warn().Err(err).Str("room_id", roomID.String()).
+				Msg("Failed to check DM room; ignoring command")
+			return true
+		}
+		return isDM
+	}
+	return commandCandidate(evt, b.AS.BotMXID(), b.isPuppet, isDMRoom, now)
+}
+
+// commandCandidate is the pure pre-parse filter for bot commands. It rejects
+// the bot's own messages, puppet messages, non-*MessageEventContent content,
+// non-m.text messages, edits (m.replace), events older than maxCommandAge, and
+// DM rooms. It performs no Matrix or database calls.
+func commandCandidate(evt *event.Event, botID id.UserID, isPuppet func(id.UserID) bool, isDMRoom func(id.RoomID) bool, now time.Time) bool {
+	if evt.Sender == botID {
+		return false
+	}
+	if isPuppet(evt.Sender) {
+		return false
+	}
+	msg, ok := evt.Content.Parsed.(*event.MessageEventContent)
+	if !ok || msg.MsgType != event.MsgText {
+		return false
+	}
+	if rel := msg.OptionalGetRelatesTo(); rel != nil && rel.Type == event.RelReplace {
+		return false
+	}
+	if age := now.Sub(time.UnixMilli(evt.Timestamp)); age > maxCommandAge {
+		return false
+	}
+	if isDMRoom(evt.RoomID) {
+		return false
+	}
+	return true
+}
+
 // senderCanRunCommands fetches the sender's power level from the homeserver
 // and decides whether they may run commands (admin, or power level >=
 // command_power_level). Commands are rare, so fetching power levels on each
@@ -153,6 +184,12 @@ func (b *Bridge) senderCanRunCommands(ctx context.Context, sender id.UserID, roo
 }
 
 func (b *Bridge) cmdNewHook(ctx context.Context, evt *event.Event, label string) {
+	normalized, err := store.NormalizeLabel(label)
+	if err != nil {
+		b.replyNotice(ctx, evt, "Invalid label: "+err.Error())
+		return
+	}
+	label = normalized
 	hook := &store.Hook{
 		Token:     store.NewToken(),
 		RoomID:    evt.RoomID,
@@ -261,7 +298,7 @@ func (b *Bridge) replyNotice(ctx context.Context, original *event.Event, text st
 
 func helpText(prefix string) string {
 	return fmt.Sprintf(`Commands (all operate on hooks in this room only):
-  %s new [label]    Create a hook; the URL is sent by DM
+  %s new [label]    Create a hook; the URL is sent by DM (label max 32 chars)
   %s list           List hooks (label, token prefix, creator)
   %s remove <label|token-prefix>  Remove a hook
   %s help           Show this help`, prefix, prefix, prefix, prefix)
