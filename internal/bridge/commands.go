@@ -137,14 +137,14 @@ func (b *Bridge) isCommandCandidate(evt *event.Event, now time.Time) bool {
 		}
 		return isDM
 	}
-	return commandCandidate(evt, b.AS.BotMXID(), b.isPuppet, isDMRoom, now)
+	return commandCandidate(evt, b.AS.BotMXID(), b.Cfg.CommandPrefix, b.isPuppet, isDMRoom, now)
 }
 
 // commandCandidate is the pure pre-parse filter for bot commands. It rejects
 // the bot's own messages, puppet messages, non-*MessageEventContent content,
-// non-m.text messages, edits (m.replace), events older than maxCommandAge, and
-// DM rooms. It performs no Matrix or database calls.
-func commandCandidate(evt *event.Event, botID id.UserID, isPuppet func(id.UserID) bool, isDMRoom func(id.RoomID) bool, now time.Time) bool {
+// non-m.text messages, edits (m.replace), events older than maxCommandAge,
+// messages without the command prefix, and DM rooms. It performs no Matrix or database calls.
+func commandCandidate(evt *event.Event, botID id.UserID, prefix string, isPuppet func(id.UserID) bool, isDMRoom func(id.RoomID) bool, now time.Time) bool {
 	if evt.Sender == botID {
 		return false
 	}
@@ -159,6 +159,11 @@ func commandCandidate(evt *event.Event, botID id.UserID, isPuppet func(id.UserID
 		return false
 	}
 	if age := now.Sub(time.UnixMilli(evt.Timestamp)); age > maxCommandAge {
+		return false
+	}
+	// Only messages that look like commands reach the DM check, which is a
+	// database lookup; ordinary chat in the bot's rooms never touches the DB.
+	if parseCommand(msg.Body, prefix) == nil {
 		return false
 	}
 	if isDMRoom(evt.RoomID) {

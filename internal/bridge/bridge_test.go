@@ -341,12 +341,25 @@ func TestCommandCandidate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			evt := *validBase
 			tc.mod(&evt)
-			got := commandCandidate(&evt, botID, puppet, isDMRoom, now)
+			got := commandCandidate(&evt, botID, "!hook", puppet, isDMRoom, now)
 			if got != tc.allow {
 				t.Errorf("commandCandidate = %v, want %v", got, tc.allow)
 			}
 		})
 	}
+
+	t.Run("ordinary chat never triggers the DM lookup", func(t *testing.T) {
+		lookups := 0
+		countingDM := func(id.RoomID) bool { lookups++; return false }
+		evt := *validBase
+		evt.Content = event.Content{Parsed: &event.MessageEventContent{MsgType: event.MsgText, Body: "just chatting"}}
+		if commandCandidate(&evt, botID, "!hook", puppet, countingDM, now) {
+			t.Error("a message without the prefix should not be a command candidate")
+		}
+		if lookups != 0 {
+			t.Errorf("DM lookup ran %d times for a non-command message, want 0", lookups)
+		}
+	})
 }
 
 // ---------- NormalizeLabel ----------
