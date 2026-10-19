@@ -10,6 +10,7 @@ import (
 
 	"github.com/joenas/matrix-slackhooks/internal/config"
 	"github.com/joenas/matrix-slackhooks/internal/store"
+	"github.com/joenas/matrix-slackhooks/internal/webhook"
 )
 
 func TestRoomAllowed(t *testing.T) {
@@ -523,5 +524,45 @@ func TestIsLocalIP(t *testing.T) {
 	}
 	if isLocalIP(mustAddr("198.20.0.1")) {
 		t.Error("198.20.0.1 should not be blocked (just above 198.18.0.0/15)")
+	}
+}
+
+func TestRenderMessageMsgType(t *testing.T) {
+	tests := []struct {
+		name       string
+		defaultCfg string
+		payload    string
+		want       event.MessageType
+	}{
+		{"default text, no override", "m.text", "", event.MsgText},
+		{"default text, payload notice", "m.text", "notice", event.MsgNotice},
+		{"default notice, no override", "m.notice", "", event.MsgNotice},
+		{"default notice, payload text", "m.notice", "text", event.MsgText},
+		{"payload emote", "m.text", "emote", event.MsgEmote},
+		{"unknown payload value falls back", "m.notice", "bogus", event.MsgNotice},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &Bridge{Cfg: &config.Config{DefaultMsgtype: tc.defaultCfg}}
+			content := b.renderMessage(&webhook.Payload{Text: "hi", MsgType: tc.payload})
+			if content.MsgType != tc.want {
+				t.Errorf("MsgType = %q, want %q", content.MsgType, tc.want)
+			}
+		})
+	}
+}
+
+func TestRenderMessageHTMLNotice(t *testing.T) {
+	b := &Bridge{Cfg: &config.Config{DefaultMsgtype: "m.text"}}
+	html := "<a href='https://example.com/news/1'>Some headline</a>"
+	content := b.renderMessage(&webhook.Payload{Text: html, Format: "html", MsgType: "notice"})
+	if content.MsgType != event.MsgNotice {
+		t.Errorf("MsgType = %q, want m.notice", content.MsgType)
+	}
+	if content.Format != event.FormatHTML || content.FormattedBody != html {
+		t.Errorf("unexpected formatted body: %q (%q)", content.FormattedBody, content.Format)
+	}
+	if content.Body != "Some headline" {
+		t.Errorf("Body = %q, want the stripped text", content.Body)
 	}
 }

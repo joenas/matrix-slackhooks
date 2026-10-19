@@ -11,7 +11,8 @@ kept in SQLite ([modernc.org/sqlite](https://modernc.org/sqlite), no CGO).
 
 - Slack incoming webhook payload format, so existing tools with "Slack
   webhook" support work without changes. turt2live/matrix-appservice-webhooks
-  fields (`displayName`, `avatar_url`, `format`) are accepted as aliases.
+  fields (`displayName`, `avatar_url`, `format`, `msgtype`) are accepted as
+  aliases.
 - One Matrix puppet user per source name, with display name and avatar.
 - Slack mrkdwn (`*bold*`, `_italic_`, `~strike~`, code, `<url|label>` links)
   converted to Matrix HTML messages.
@@ -166,6 +167,7 @@ Send a JSON POST (or `application/x-www-form-urlencoded` with the JSON in a
 | `icon_url` / `avatar_url` | Avatar image URL; downloaded (max 2 MB, images only), uploaded to the media repo and set as the puppet's avatar. Cached per URL. Downloads refuse loopback/private/link-local/multicast targets (SSRF guard, also for redirects) and follow at most 3 redirects. |
 | `icon_emoji` | `:shortcode:`; rendered as a unicode emoji (small built-in map) prepended to the text when no avatar URL is given. |
 | `format` | Set to `"html"` to pass `text` through as HTML (turt2live compat). |
+| `msgtype` | `"text"`, `"notice"` or `"emote"` (the `m.` prefix is optional) to override `default_msgtype` for this message (turt2live compat). Unknown values fall back to the default. |
 
 Responses match Slack: `ok` (200) on success, 400 for a bad payload, 404 for
 an unknown token. If the homeserver does not answer within 25s the request

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/url"
 	"strings"
+
+	"maunium.net/go/mautrix/event"
 )
 
 type Attachment struct {
@@ -22,6 +24,7 @@ type Payload struct {
 	AvatarURL   string `json:"avatar_url"`
 	IconEmoji   string `json:"icon_emoji"`
 	Format      string `json:"format"`
+	MsgType     string `json:"msgtype"`
 
 	Attachments []Attachment `json:"attachments"`
 }
@@ -48,6 +51,23 @@ func (p *Payload) SourceAvatarURL() string {
 		return url
 	}
 	return ""
+}
+
+// MessageType returns the Matrix msgtype requested by the turt2live msgtype
+// field: "text", "notice" or "emote", with or without the "m." prefix. It
+// returns false when the field is empty or unknown, so the configured
+// default_msgtype applies.
+func (p *Payload) MessageType() (event.MessageType, bool) {
+	switch strings.ToLower(strings.TrimPrefix(strings.TrimSpace(p.MsgType), "m.")) {
+	case "text":
+		return event.MsgText, true
+	case "notice":
+		return event.MsgNotice, true
+	case "emote":
+		return event.MsgEmote, true
+	default:
+		return "", false
+	}
 }
 
 func (p *Payload) Valid() bool {
@@ -102,5 +122,6 @@ func payloadFromValues(values url.Values) *Payload {
 		AvatarURL:   values.Get("avatar_url"),
 		IconEmoji:   values.Get("icon_emoji"),
 		Format:      values.Get("format"),
+		MsgType:     values.Get("msgtype"),
 	}
 }
