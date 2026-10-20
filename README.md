@@ -388,3 +388,15 @@ curl -d '{"text":"hi","username":"Alice","icon_url":"https://example.com/a.png"}
 Two posts with different `username`/`icon_url` produce two distinct users with
 the correct names and avatars in the room; re-posting does not re-upload the
 avatar or re-set the profile.
+
+## License
+
+slackhooks is released under the [MIT License](LICENSE). Its dependencies keep
+their own licenses: MIT, BSD-3-Clause, ISC, Apache-2.0 and MPL-2.0 (mautrix
+and `go.mau.fi/util`). They are only referenced in `go.mod`; no third-party
+source is vendored into this repository.
+
+The Docker image bundles every dependency's license and notice files, plus the
+MPL-2.0 source code, under `/usr/share/licenses/slackhooks`. `just
+licenses-check` (also run by `just release`) fails if a dependency with a
+forbidden, restricted or unrecognised license is added.
