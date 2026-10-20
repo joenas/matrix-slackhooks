@@ -3,6 +3,9 @@ set positional-arguments
 # Image name for dockerctl (default would be the checkout's dir name)
 export IMAGE_NAME := env("IMAGE_NAME", "slackhooks")
 
+# Pinned go-licenses (keep in sync with the Dockerfile)
+go_licenses := "github.com/google/go-licenses/v2@v2.0.1"
+
 version := `git describe --tags --always --dirty 2>/dev/null || echo dev`
 ldflags := "-s -w -X main.version=" + version
 
@@ -14,6 +17,10 @@ test:
   go vet ./...
   @test -z "$(gofmt -l .)" || (echo "gofmt needed:"; gofmt -l .; exit 1)
   go test ./...
+
+# Fail if a dependency has a forbidden, restricted or unrecognised license
+licenses-check:
+  go run {{ go_licenses }} check ./... --disallowed_types=forbidden,restricted,unknown --ignore github.com/joenas/matrix-slackhooks
 
 # Build the local binary (./slackhooks)
 bin:
@@ -58,6 +65,7 @@ release VERSION ARCH="amd64":
   [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || { echo "❌ main is not in sync with origin/main"; exit 1; }
   if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then echo "❌ $tag already exists"; exit 1; fi
   just test
+  just licenses-check
   # Build before tagging, so a failed build leaves no tag behind
   VERSION="$tag" dockerctl build {{ ARCH }}
   git tag "$tag"
