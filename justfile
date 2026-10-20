@@ -42,3 +42,25 @@ publish ARCH="amd64":
 # Smoke-test the image locally (env from .env, data in the slackhooks-dev volume)
 docker-run *ARGS:
   docker run --rm -it -p 29329:29329 -v slackhooks-dev:/data --env-file .env $IMAGE_NAME:{{ version }} "$@"
+
+# Release: tag main as vVERSION and publish that image, e.g. `just release 0.3.0`
+[confirm("Tag main and publish this release?")]
+release VERSION ARCH="amd64":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  v="{{ VERSION }}"
+  tag="v${v#v}"
+  [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "❌ VERSION must look like 1.2.3"; exit 1; }
+  [ -n "${REGISTRY_HOST:-}" ] || { echo "❌ \$REGISTRY_HOST is not set"; exit 1; }
+  [ "$(git branch --show-current)" = main ] || { echo "❌ Releases are tagged on main"; exit 1; }
+  [ -z "$(git status --porcelain)" ] || { echo "❌ Working tree is not clean"; exit 1; }
+  git fetch -q origin main --tags
+  [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || { echo "❌ main is not in sync with origin/main"; exit 1; }
+  if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then echo "❌ $tag already exists"; exit 1; fi
+  just test
+  # Build before tagging, so a failed build leaves no tag behind
+  VERSION="$tag" dockerctl build {{ ARCH }}
+  git tag "$tag"
+  git push origin "$tag"
+  VERSION="$tag" dockerctl push {{ ARCH }}
+  echo "✅ Released $tag as $REGISTRY_HOST/$IMAGE_NAME:$tag"

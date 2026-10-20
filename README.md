@@ -190,9 +190,14 @@ Build and push (uses the `dockerctl` script from the dotfiles; needs
 `REGISTRY_HOST`, image name `slackhooks` from the justfile):
 
 ```
+just release 0.3.0     # tag main as v0.3.0, push the tag, build and push that image
 just publish           # = dockerctl build push amd64, tagged git describe --tags --always --dirty
 just build             # build only, optionally: just build arm64
 ```
+
+`just release` asks for confirmation and refuses unless you're on a clean
+`main` that matches `origin/main`, the tag is new and `just test` passes. The
+image is built before the tag is created, so a failed build leaves no tag.
 
 Without `dockerctl` the plain equivalent is:
 
