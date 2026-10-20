@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"maunium.net/go/mautrix/event"
 	"net/url"
 	"testing"
 )
@@ -143,5 +144,60 @@ func TestLookupEmoji(t *testing.T) {
 	}
 	if got := LookupEmoji(":totally_unknown:"); got != ":totally_unknown:" {
 		t.Errorf("unknown shortcode should be kept raw, got %q", got)
+	}
+}
+
+func TestPayloadMessageType(t *testing.T) {
+	tests := []struct {
+		in     string
+		want   event.MessageType
+		wantOK bool
+	}{
+		{"", "", false},
+		{"text", event.MsgText, true},
+		{"notice", event.MsgNotice, true},
+		{"NOTICE", event.MsgNotice, true},
+		{"m.notice", event.MsgNotice, true},
+		{" emote ", event.MsgEmote, true},
+		{"m.emote", event.MsgEmote, true},
+		{"m.image", "", false},
+		{"bogus", "", false},
+	}
+	for _, test := range tests {
+		got, ok := (&Payload{MsgType: test.in}).MessageType()
+		if got != test.want || ok != test.wantOK {
+			t.Errorf("MessageType(%q) = %q, %v; want %q, %v", test.in, got, ok, test.want, test.wantOK)
+		}
+	}
+}
+
+func TestParsePayloadTurt2liveNotice(t *testing.T) {
+	p, err := ParsePayload("application/json", []byte(`{
+		"text": "<a href='https://example.com/news/1'>Some headline</a>",
+		"format": "html",
+		"displayName": "Example News",
+		"msgtype": "notice"
+	}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, ok := p.MessageType(); !ok || got != event.MsgNotice {
+		t.Errorf("unexpected msgtype: %q, %v", got, ok)
+	}
+	if p.SourceName() != "Example News" || p.Format != "html" {
+		t.Errorf("unexpected payload: %+v", p)
+	}
+}
+
+func TestParsePayloadFormEncodedMsgType(t *testing.T) {
+	form := url.Values{}
+	form.Set("text", "hello")
+	form.Set("msgtype", "m.notice")
+	p, err := ParsePayload("application/x-www-form-urlencoded", []byte(form.Encode()))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, ok := p.MessageType(); !ok || got != event.MsgNotice {
+		t.Errorf("unexpected msgtype: %q, %v", got, ok)
 	}
 }

@@ -217,8 +217,12 @@ func (b *Bridge) renderMessage(payload *webhook.Payload) *event.MessageEventCont
 	}
 	body := strings.Join(lines, "\n")
 
+	msgType := b.Cfg.MsgType()
+	if requested, ok := payload.MessageType(); ok {
+		msgType = requested
+	}
 	content := &event.MessageEventContent{
-		MsgType: b.Cfg.MsgType(),
+		MsgType: msgType,
 		Body:    body,
 	}
 	if payload.Format == "html" {
